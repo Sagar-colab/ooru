@@ -45,3 +45,26 @@ export type NeighbourhoodBcf = typeof neighbourhoodBcfs.$inferSelect;
 
 export type Conversation = typeof conversations.$inferSelect;
 export type MessageLogEntry = typeof messageLog.$inferSelect;
+
+// ── Gupshup WhatsApp types ─────────────────────────────────
+
+export interface GupshupMessage {
+  app: string;
+  timestamp: string;
+  version: number;
+  type: "message" | "user-event";
+  payload: {
+    id: string;
+    source: string;
+    type: "text" | "image" | "audio" | "location" | "document";
+    payload: {
+      text?: string;
+      url?: string;
+      caption?: string;
+    };
+    sender: {
+      phone: string;
+      name?: string;
+    };
+  };
+}
