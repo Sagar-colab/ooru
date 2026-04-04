@@ -9,6 +9,7 @@ import neighbourhoodsRouter from "./routes/neighbourhoods.js";
 import shopBusinessesRouter from "./routes/shopBusinesses.js";
 import evoRouter from "./routes/evo.js";
 import whatsappRouter from "./routes/whatsapp.js";
+import demoRouter from "./routes/demo.js";
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3002;
@@ -44,6 +45,7 @@ app.use("/api/neighbourhoods", neighbourhoodsRouter);
 app.use("/api/shop-businesses", shopBusinessesRouter);
 app.use("/api/evo", evoRouter);
 app.use("/api/webhook", whatsappRouter);
+app.use("/api/demo", demoRouter);
 
 // Serve React dist in production
 if (process.env.NODE_ENV === "production") {

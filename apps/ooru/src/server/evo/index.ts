@@ -10,6 +10,10 @@ import {
   orders,
 } from "../db/schema.js";
 import { eq } from "drizzle-orm";
+import {
+  matchShopOwnerIntent,
+  handleShopOwnerIntent,
+} from "./handlers/shopOwner.js";
 
 const apiKey = process.env.ANTHROPIC_API_KEY || undefined;
 const client = apiKey ? new Anthropic({ apiKey }) : null;
@@ -27,7 +31,6 @@ export function isNoise(text: string): boolean {
 export type Role = "consumer" | "shop_owner" | "merchant" | "rider" | "new_user";
 
 export async function detectRole(phone: string): Promise<Role> {
-  // Check shop_businesses first (shop_owner)
   const [shop] = await db
     .select()
     .from(shopBusinesses)
@@ -35,7 +38,6 @@ export async function detectRole(phone: string): Promise<Role> {
     .limit(1);
   if (shop) return "shop_owner";
 
-  // Check merchants
   const [merchant] = await db
     .select()
     .from(merchants)
@@ -43,7 +45,6 @@ export async function detectRole(phone: string): Promise<Role> {
     .limit(1);
   if (merchant) return "merchant";
 
-  // Check riders
   const [rider] = await db
     .select()
     .from(riders)
@@ -51,7 +52,6 @@ export async function detectRole(phone: string): Promise<Role> {
     .limit(1);
   if (rider) return "rider";
 
-  // Check consumers
   const [consumer] = await db
     .select()
     .from(consumers)
@@ -78,7 +78,7 @@ Be warm, brief, and helpful. Show prices in ₹. This is WhatsApp — keep it co
 You help merchants manage incoming orders, update menus, track daily revenue, and handle delivery logistics.
 Be professional but friendly. Show money in ₹. Keep replies concise — WhatsApp style.`,
 
-  rider: `You are Ooru (ಊರು), a delivery partner assistant on WhatsApp for riders in Bengaluru.
+  rider: `You are Ooru (ಊರు), a delivery partner assistant on WhatsApp for riders in Bengaluru.
 You help riders see assigned deliveries, navigate routes, track earnings, and manage their online status.
 Be encouraging and brief. Show earnings in ₹. WhatsApp style — short and clear.`,
 };
@@ -132,7 +132,7 @@ Udhar: ${ledger.length} entries, outstanding ₹${(credit - debit) / 100}.`;
         .select()
         .from(orders)
         .where(eq(orders.merchantId, m.id));
-      return `Restaurant: ${m.name}. Open: ${m.isOpen}. Menu items: ${ords.length} orders. Revenue today: ₹${ords.reduce((s, o) => s + o.totalPaise, 0) / 100}.`;
+      return `Restaurant: ${m.name}. Open: ${m.isOpen}. Orders: ${ords.length}. Revenue today: ₹${ords.reduce((s, o) => s + o.totalPaise, 0) / 100}.`;
     }
     case "rider": {
       const [r] = await db
@@ -145,6 +145,46 @@ Udhar: ${ledger.length} entries, outstanding ₹${(credit - debit) / 100}.`;
     }
     default:
       return "";
+  }
+}
+
+// ── intent classification (async, non-blocking) ────────────
+
+const ROLE_INTENTS: Record<string, string[]> = {
+  shop_owner: [
+    "morning_brief", "check_revenue", "udhar_check", "udhar_add",
+    "stock_check", "gst_query", "check_daily_pnl", "general_question",
+  ],
+  consumer: [
+    "browse_restaurants", "view_menu", "place_order", "track_order",
+    "find_service", "general_question",
+  ],
+  merchant: [
+    "check_orders", "update_menu", "check_revenue", "toggle_open",
+    "general_question",
+  ],
+  rider: [
+    "check_deliveries", "go_online", "check_earnings", "general_question",
+  ],
+};
+
+async function classifyIntent(role: string, message: string): Promise<string> {
+  if (!client) return "mock";
+
+  const intents = ROLE_INTENTS[role] || ["general_question"];
+  try {
+    const response = await client.messages.create({
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 30,
+      system: `Classify this message into exactly one intent from this list. Return only the intent name, nothing else.\nIntents: ${intents.join(", ")}`,
+      messages: [
+        { role: "user", content: `Role: ${role}\nMessage: ${message}` },
+      ],
+    });
+    const text = response.content[0].type === "text" ? response.content[0].text.trim() : "general_question";
+    return intents.includes(text) ? text : "general_question";
+  } catch {
+    return "general_question";
   }
 }
 
@@ -170,6 +210,20 @@ export async function runEvo(input: EvoInput): Promise<EvoResult> {
     return { reply: "", intent: "noise", model: "none" };
   }
 
+  // 1. Try specific intent handlers first (pattern matching — fast)
+  if (role === "shop_owner") {
+    const intent = matchShopOwnerIntent(message);
+    if (intent) {
+      const result = await handleShopOwnerIntent(intent, phone, message);
+      if (result.handled) {
+        // Fire-and-forget: classify intent via LLM in background
+        classifyIntent(role, message).catch(() => {});
+        return { reply: result.reply, intent: result.intent, model: "handler" };
+      }
+    }
+  }
+
+  // 2. Fall through to general Evo (LLM)
   const persona = PERSONAS[role];
   if (!persona) {
     return {
@@ -191,6 +245,7 @@ Use the data above to answer the user's question. If the data doesn't cover what
 Respond in 1-3 short sentences. This is WhatsApp.`;
 
   if (!client) {
+    // Mock mode — still try handler pattern match for structured responses
     return {
       reply: `[mock] Role: ${role}. Context loaded. Message: "${message}"`,
       intent: "mock",
@@ -199,17 +254,21 @@ Respond in 1-3 short sentences. This is WhatsApp.`;
   }
 
   try {
-    const response = await client.messages.create({
-      model: "claude-haiku-4-5-20251001",
-      max_tokens: 512,
-      system: systemPrompt,
-      messages: [{ role: "user", content: message }],
-    });
+    // Run response generation and intent classification in parallel
+    const [response, detectedIntent] = await Promise.all([
+      client.messages.create({
+        model: "claude-haiku-4-5-20251001",
+        max_tokens: 512,
+        system: systemPrompt,
+        messages: [{ role: "user", content: message }],
+      }),
+      classifyIntent(role, message),
+    ]);
 
     const reply =
       response.content[0].type === "text" ? response.content[0].text : "";
 
-    return { reply, intent: "evo", model: response.model };
+    return { reply, intent: detectedIntent, model: response.model };
   } catch (err: any) {
     console.error("[evo] Claude error:", err.message);
     return {
