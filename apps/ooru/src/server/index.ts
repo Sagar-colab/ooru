@@ -7,6 +7,7 @@ import merchantsRouter from "./routes/merchants.js";
 import ordersRouter from "./routes/orders.js";
 import neighbourhoodsRouter from "./routes/neighbourhoods.js";
 import shopBusinessesRouter from "./routes/shopBusinesses.js";
+import evoRouter from "./routes/evo.js";
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3002;
@@ -40,6 +41,7 @@ app.use("/api/merchants", merchantsRouter);
 app.use("/api/orders", ordersRouter);
 app.use("/api/neighbourhoods", neighbourhoodsRouter);
 app.use("/api/shop-businesses", shopBusinessesRouter);
+app.use("/api/evo", evoRouter);
 
 // Serve React dist in production
 if (process.env.NODE_ENV === "production") {
