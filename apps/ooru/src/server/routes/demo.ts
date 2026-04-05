@@ -1,8 +1,8 @@
 import { Router } from "express";
 import { z } from "zod";
 import { db } from "../db/index.js";
-import { conversations } from "../db/schema.js";
-import { eq, and } from "drizzle-orm";
+import { conversations, consumers } from "../db/schema.js";
+import { eq } from "drizzle-orm";
 import { runEvo, type Role } from "../evo/index.js";
 
 const router = Router();
@@ -27,6 +27,36 @@ router.post("/chat", async (req, res) => {
 
   // Use a stable demo phone that maps to seeded data
   const demoPhone = getDemoPhone(evoRole);
+
+  // Ensure demo consumer + conversation exists
+  if (evoRole === "consumer") {
+    const [existing] = await db
+      .select()
+      .from(consumers)
+      .where(eq(consumers.phone, demoPhone))
+      .limit(1);
+    if (!existing) {
+      await db.insert(consumers).values({
+        phone: demoPhone,
+        name: "Demo Consumer",
+        neighbourhoodSlug: "indiranagar",
+        dietary: "both",
+      });
+    }
+    const [convo] = await db
+      .select()
+      .from(conversations)
+      .where(eq(conversations.phone, demoPhone))
+      .limit(1);
+    if (!convo) {
+      await db.insert(conversations).values({
+        phone: demoPhone,
+        role: "consumer",
+        persona: "consumer",
+        state: { step: "done" },
+      });
+    }
+  }
 
   const result = await runEvo({
     role: evoRole,

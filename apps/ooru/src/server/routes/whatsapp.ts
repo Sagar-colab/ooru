@@ -64,13 +64,9 @@ async function handleNewUser(
       await db.insert(consumers).values({ phone });
       await db
         .update(conversations)
-        .set({
-          role: "consumer",
-          persona: "consumer",
-          state: { step: "done" },
-        })
+        .set({ state: { step: "awaiting_consumer_name" } })
         .where(eq(conversations.id, convo!.id));
-      return "Welcome to Ooru! 🎉 You're set as a resident. Ask me about nearby restaurants, services, or anything in your neighbourhood.";
+      return "Welcome to Ooru! 🎉 What's your name?";
     }
     if (choice === "2") {
       await db
@@ -87,6 +83,38 @@ async function handleNewUser(
       return "Welcome, delivery partner! What's your name?";
     }
     return "Please reply 1, 2, or 3.";
+  }
+
+  // Consumer — awaiting name
+  if (state.step === "awaiting_consumer_name") {
+    await db
+      .update(consumers)
+      .set({ name: text.trim() })
+      .where(eq(consumers.phone, phone));
+    await db
+      .update(conversations)
+      .set({ state: { step: "awaiting_consumer_dietary" } })
+      .where(eq(conversations.id, convo!.id));
+    return `Nice to meet you, ${text.trim()}! Are you:\n1️⃣ Veg\n2️⃣ Non-veg\n3️⃣ Both`;
+  }
+
+  // Consumer — awaiting dietary
+  if (state.step === "awaiting_consumer_dietary") {
+    const dietMap: Record<string, string> = { "1": "veg", "2": "nonveg", "3": "both" };
+    const dietary = dietMap[text.trim()] || "both";
+    await db
+      .update(consumers)
+      .set({ dietary })
+      .where(eq(consumers.phone, phone));
+    await db
+      .update(conversations)
+      .set({
+        role: "consumer",
+        persona: "consumer",
+        state: { step: "done" },
+      })
+      .where(eq(conversations.id, convo!.id));
+    return "Great! Now tell me what you're hungry for, or ask about anything in Indiranagar. 🍽️";
   }
 
   // Shop owner — awaiting business name

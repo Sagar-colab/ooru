@@ -21,6 +21,10 @@ import {
   matchRestaurantIntent,
   handleRestaurantIntent,
 } from "./handlers/restaurant.js";
+import {
+  matchConsumerIntent,
+  handleConsumerIntent,
+} from "./handlers/consumer.js";
 
 function getApiKey(): string | undefined {
   const sysKey = process.env.ANTHROPIC_API_KEY;
@@ -258,6 +262,17 @@ export async function runEvo(input: EvoInput): Promise<EvoResult> {
     const intent = matchRestaurantIntent(message);
     if (intent) {
       const result = await handleRestaurantIntent(intent, phone, message);
+      if (result.handled) {
+        classifyIntent(role, message).catch(() => {});
+        return { reply: result.reply, intent: result.intent, model: "handler" };
+      }
+    }
+  }
+
+  if (role === "consumer") {
+    const intent = matchConsumerIntent(message);
+    if (intent) {
+      const result = await handleConsumerIntent(intent, phone, message);
       if (result.handled) {
         classifyIntent(role, message).catch(() => {});
         return { reply: result.reply, intent: result.intent, model: "handler" };
