@@ -27,6 +27,27 @@ interface NeighbourhoodData {
   slug: string; name: string; centerLat: number; centerLng: number;
 }
 
+interface SatelliteHex {
+  hexCell: string; value: number;
+}
+
+interface ScoreData {
+  composite: number;
+  dimensions: Record<string, number>;
+  hexCount: number;
+}
+
+const OVERLAY_BUTTONS = [
+  { id: "ndvi", emoji: "🌿", label: "Green" },
+  { id: "heat", emoji: "🌡", label: "Heat" },
+  { id: "flood", emoji: "🌊", label: "Flood" },
+  { id: "safety", emoji: "🛡", label: "Safety" },
+  { id: "water", emoji: "💧", label: "Water" },
+  { id: "health", emoji: "🏥", label: "Health" },
+];
+
+const LOCKED_OVERLAYS = ["Air Quality", "Roads", "Noise", "Footfall", "Walkability", "Cyclability"];
+
 const PILLS = [
   { id: "today", emoji: "🏠", label: "Today" },
   { id: "issues", emoji: "📍", label: "Issues" },
@@ -79,12 +100,29 @@ export default function Neighbourhood() {
   const [selectedBcf, setSelectedBcf] = useState<BCFData | null>(null);
   const [evoExpanded, setEvoExpanded] = useState(false);
   const [hexPolygons, setHexPolygons] = useState<{ coords: [number, number][]; score: number }[]>([]);
+  const [activeOverlay, setActiveOverlay] = useState<string | null>(null);
+  const [overlayHexes, setOverlayHexes] = useState<Map<string, number>>(new Map());
+  const [score, setScore] = useState<ScoreData | null>(null);
 
   useEffect(() => {
     fetch(`/api/neighbourhoods/${slug}`).then(r => r.json()).then(setNeighbourhood).catch(() => {});
     fetch(`/api/merchants?neighbourhood_slug=${slug}`).then(r => r.json()).then(setMerchants).catch(() => {});
     fetch(`/api/bcfs/${slug}`).then(r => r.json()).then(setBcfs).catch(() => {});
+    fetch(`/api/neighbourhoods/${slug}/score`).then(r => r.json()).then(setScore).catch(() => {});
   }, [slug]);
+
+  // Fetch overlay data
+  useEffect(() => {
+    if (!activeOverlay) { setOverlayHexes(new Map()); return; }
+    fetch(`/api/satellite/${slug}/${activeOverlay}`)
+      .then(r => r.json())
+      .then((rows: SatelliteHex[]) => {
+        const m = new Map<string, number>();
+        rows.forEach(r => m.set(r.hexCell, r.value));
+        setOverlayHexes(m);
+      })
+      .catch(() => {});
+  }, [slug, activeOverlay]);
 
   // Generate H3 hex grid
   useEffect(() => {
@@ -115,21 +153,36 @@ export default function Neighbourhood() {
         />
 
         {/* H3 hex grid */}
-        {activePill === "today" && hexPolygons.map((hex, i) => (
-          <Polygon
-            key={i}
-            positions={hex.coords}
-            pathOptions={{
-              fillColor: scoreColor(hex.score),
-              fillOpacity: 0.2,
-              color: scoreColor(hex.score),
-              weight: 1,
-              opacity: 0.4,
-            }}
-          >
-            <Popup>{`Health: ${hex.score}/100`}</Popup>
-          </Polygon>
-        ))}
+        {(activePill === "today" || activePill === "explore") && hexPolygons.map((hex, i) => {
+          // Use overlay data if active, else default score
+          const hexId = hex.coords.length > 0 ? `hex-${i}` : "";
+          const overlayVal = activeOverlay && activePill === "explore"
+            ? overlayHexes.get(Array.from(overlayHexes.keys())[i] || "") ?? null
+            : null;
+
+          const color = overlayVal !== null && activeOverlay
+            ? overlayColor(activeOverlay, overlayVal)
+            : scoreColor(hex.score);
+          const label = overlayVal !== null && activeOverlay
+            ? `${activeOverlay}: ${overlayVal}`
+            : `Health: ${hex.score}/100`;
+
+          return (
+            <Polygon
+              key={i}
+              positions={hex.coords}
+              pathOptions={{
+                fillColor: color,
+                fillOpacity: overlayVal !== null ? 0.35 : 0.2,
+                color,
+                weight: 1,
+                opacity: 0.4,
+              }}
+            >
+              <Popup>{label}</Popup>
+            </Polygon>
+          );
+        })}
 
         {/* Restaurant markers */}
         {(activePill === "here" || activePill === "today") && merchants.map(m => (
@@ -185,6 +238,65 @@ export default function Neighbourhood() {
           ))}
         </div>
       </div>
+
+      {/* Overlay controls (Explore pill) */}
+      {activePill === "explore" && (
+        <div style={{ position: "absolute", top: 70, left: 16, right: 16, zIndex: 1000 }}>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+            {OVERLAY_BUTTONS.map(o => (
+              <button
+                key={o.id}
+                onClick={() => setActiveOverlay(activeOverlay === o.id ? null : o.id)}
+                style={{
+                  ...GLASS,
+                  padding: "6px 14px",
+                  fontSize: 13,
+                  fontWeight: activeOverlay === o.id ? 700 : 400,
+                  color: activeOverlay === o.id ? "#fff" : "#aaa",
+                  cursor: "pointer",
+                  borderColor: activeOverlay === o.id ? "#8B5CF6" : "rgba(136,136,187,0.2)",
+                  background: activeOverlay === o.id ? "rgba(139,92,246,0.3)" : GLASS.background,
+                }}
+              >
+                {o.emoji} {o.label}
+              </button>
+            ))}
+          </div>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            {LOCKED_OVERLAYS.map(name => (
+              <span
+                key={name}
+                style={{
+                  ...GLASS,
+                  padding: "4px 12px",
+                  fontSize: 12,
+                  color: "#555",
+                  cursor: "not-allowed",
+                }}
+                title="Unlock by submitting 7 more reports."
+              >
+                🔒 {name}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Score card (top-right) */}
+      {score && score.composite > 0 && (
+        <div style={{
+          ...GLASS,
+          position: "absolute", top: 16, right: 16, zIndex: 1000,
+          padding: "12px 16px", textAlign: "center", minWidth: 80,
+        }}>
+          <div style={{ fontSize: 32, fontWeight: 800, color: scoreColor(score.composite) }}>
+            {score.composite}
+          </div>
+          <div style={{ fontSize: 11, color: "#aaa" }}>
+            {neighbourhood?.name || slug}
+          </div>
+        </div>
+      )}
 
       {/* Bottom sheet — merchant */}
       {selectedMerchant && (
@@ -316,4 +428,38 @@ function scoreColor(score: number): string {
   if (score >= 75) return "#22C55E";
   if (score >= 55) return "#EAB308";
   return "#EF4444";
+}
+
+function overlayColor(type: string, value: number): string {
+  // Normalize to 0-1 where applicable
+  switch (type) {
+    case "ndvi": // 0-1: red → green
+      return interpolate(value, 0, 1, "#8B0000", "#006400");
+    case "heat": // 28-38: blue → red
+      return interpolate(value, 28, 38, "#3B82F6", "#EF4444");
+    case "flood": // 0-1: green → red (higher = more risk)
+      return interpolate(value, 0, 0.5, "#22C55E", "#EF4444");
+    case "safety": // 0-1: red → green
+      return interpolate(value, 0, 1, "#EF4444", "#22C55E");
+    case "water": // 0-1: grey → blue
+      return interpolate(value, 0, 1, "#6B7280", "#3B82F6");
+    case "health": // 0-1: red → green
+      return interpolate(value, 0, 1, "#EF4444", "#22C55E");
+    default:
+      return "#8B5CF6";
+  }
+}
+
+function interpolate(value: number, min: number, max: number, colorLow: string, colorHigh: string): string {
+  const t = Math.max(0, Math.min(1, (value - min) / (max - min)));
+  const r1 = parseInt(colorLow.slice(1, 3), 16);
+  const g1 = parseInt(colorLow.slice(3, 5), 16);
+  const b1 = parseInt(colorLow.slice(5, 7), 16);
+  const r2 = parseInt(colorHigh.slice(1, 3), 16);
+  const g2 = parseInt(colorHigh.slice(3, 5), 16);
+  const b2 = parseInt(colorHigh.slice(5, 7), 16);
+  const r = Math.round(r1 + (r2 - r1) * t);
+  const g = Math.round(g1 + (g2 - g1) * t);
+  const b = Math.round(b1 + (b2 - b1) * t);
+  return `#${r.toString(16).padStart(2, "0")}${g.toString(16).padStart(2, "0")}${b.toString(16).padStart(2, "0")}`;
 }

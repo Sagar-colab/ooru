@@ -18,6 +18,7 @@ import kdsRouter from "./routes/kds.js";
 import posRouter from "./routes/pos.js";
 import dukaanRouter from "./routes/dukaan.js";
 import bcfsRouter from "./routes/bcfs.js";
+import satelliteRouter from "./routes/satellite.js";
 import { scheduleMorningBrief } from "./crons/morningBrief.js";
 import { createServer } from "http";
 import { setupSocket } from "./socket.js";
@@ -63,6 +64,7 @@ app.use("/api/kds", kdsRouter);
 app.use("/api/pos", posRouter);
 app.use("/dukaan", dukaanRouter);
 app.use("/api/bcfs", bcfsRouter);
+app.use("/api/satellite", satelliteRouter);
 
 // Serve React dist in production
 if (process.env.NODE_ENV === "production") {

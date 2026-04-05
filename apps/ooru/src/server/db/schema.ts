@@ -434,6 +434,53 @@ export const ratings = pgTable(
   (t) => [index("ratings_order_id_idx").on(t.orderId)]
 );
 
+// ── satellite_cache ────────────────────────────────────────
+export const satelliteCache = pgTable(
+  "satellite_cache",
+  {
+    id: serial("id").primaryKey(),
+    neighbourhoodSlug: text("neighbourhood_slug").notNull(),
+    hexCell: text("hex_cell").notNull(),
+    overlayType: text("overlay_type").notNull(),
+    value: real("value").notNull(),
+    quality: real("quality").default(1.0),
+    source: text("source").default("mock"),
+    recordedAt: timestamp("recorded_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [
+    index("satellite_cache_slug_hex_type_idx").on(
+      t.neighbourhoodSlug,
+      t.hexCell,
+      t.overlayType
+    ),
+  ]
+);
+
+// ── neighbourhood_scores ───────────────────────────────────
+export const neighbourhoodScores = pgTable(
+  "neighbourhood_scores",
+  {
+    id: serial("id").primaryKey(),
+    neighbourhoodSlug: text("neighbourhood_slug").notNull(),
+    hexCell: text("hex_cell").notNull(),
+    infrastructureScore: real("infrastructure_score"),
+    environmentScore: real("environment_score"),
+    safetyScore: real("safety_score"),
+    governanceScore: real("governance_score"),
+    greenCoverScore: real("green_cover_score"),
+    heatIslandScore: real("heat_island_score"),
+    floodRiskScore: real("flood_risk_score"),
+    mobilityScore: real("mobility_score"),
+    commercialVitalityScore: real("commercial_vitality_score"),
+    liveabilityScore: real("liveability_score"),
+    compositeScore: real("composite_score"),
+    calculatedAt: timestamp("calculated_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [
+    index("neighbourhood_scores_slug_hex_idx").on(t.neighbourhoodSlug, t.hexCell),
+  ]
+);
+
 // ── message_log ────────────────────────────────────────────
 export const messageLog = pgTable("message_log", {
   id: serial("id").primaryKey(),
