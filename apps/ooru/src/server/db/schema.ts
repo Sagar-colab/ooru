@@ -306,6 +306,29 @@ export const dailyPnl = pgTable(
   ]
 );
 
+// ── shop_daily_pnl ─────────────────────────────────────────
+export const shopDailyPnl = pgTable(
+  "shop_daily_pnl",
+  {
+    id: serial("id").primaryKey(),
+    shopBusinessId: integer("shop_business_id").references(
+      () => shopBusinesses.id
+    ),
+    date: date("date").notNull(),
+    grossRevenuePaise: integer("gross_revenue_paise").default(0),
+    cashSalesPaise: integer("cash_sales_paise").default(0),
+    upiSalesPaise: integer("upi_sales_paise").default(0),
+    costOfGoodsPaise: integer("cost_of_goods_paise").default(0),
+    udharGivenPaise: integer("udhar_given_paise").default(0),
+    udharCollectedPaise: integer("udhar_collected_paise").default(0),
+    netPaise: integer("net_paise").default(0),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [
+    index("shop_daily_pnl_shop_date_idx").on(t.shopBusinessId, t.date),
+  ]
+);
+
 // ── shop_appointments ──────────────────────────────────────
 export const shopAppointments = pgTable(
   "shop_appointments",

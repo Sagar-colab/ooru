@@ -5,9 +5,10 @@ import {
   shopInventory,
   shopAppointments,
   shopJobCards,
+  shopDailyPnl,
   orders,
 } from "../../db/schema.js";
-import { eq, and, lt, sql, desc } from "drizzle-orm";
+import { eq, and, lt, lte, gte, sql, desc } from "drizzle-orm";
 
 // ── handler result ─────────────────────────────────────────
 
@@ -76,6 +77,8 @@ const INTENT_PATTERNS: [RegExp, string][] = [
   [/(pnl|profit|loss|p&l|daily\s*report|weekly|last\s*\d+\s*days|week\s*summary)/i, "check_daily_pnl"],
   [/(how\s*much).*(owe|baki|udhar)/i, "udhar_check"],
   [/(owe|baki).*(how\s*much)/i, "udhar_check"],
+  [/(expir|expiry|expire|kharab|shelf\s*life)/i, "expiry_check"],
+  [/(loan|working\s*capital|paisa\s*chahiye|udhar\s*chahiye|credit\s*line)/i, "loan_query"],
 ];
 
 export function matchShopOwnerIntent(message: string): string | null {
@@ -125,6 +128,10 @@ export async function handleShopOwnerIntent(
       return jobCardCreate(shop, message);
     case "job_card_update":
       return jobCardUpdate(shop, message);
+    case "expiry_check":
+      return expiryCheck(shop);
+    case "loan_query":
+      return loanQuery(shop);
     default:
       return NOT_HANDLED;
   }
@@ -286,6 +293,9 @@ async function udharAdd(shop: any, message: string): Promise<HandlerResult> {
     note: `Added via WhatsApp: "${message}"`,
   });
 
+  // Update daily P&L — udhar given
+  await upsertShopPnl(shop.id, { udharGiven: amountPaise });
+
   // Get new total for this customer
   const { byCustomer } = await getUdharSummary(shop.id);
   const customerData = byCustomer.get(customerName);
@@ -341,16 +351,41 @@ async function stockCheck(shop: any): Promise<HandlerResult> {
 // ── gst_query ──────────────────────────────────────────────
 
 async function gstQuery(shop: any): Promise<HandlerResult> {
+  // Calculate this month's turnover from shop_daily_pnl
+  const now = new Date();
+  const monthStart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`;
+  const pnlRows = await db
+    .select()
+    .from(shopDailyPnl)
+    .where(
+      and(
+        eq(shopDailyPnl.shopBusinessId, shop.id),
+        gte(shopDailyPnl.date, monthStart)
+      )
+    );
+
+  const monthlyTurnover = pnlRows.reduce((s, r) => s + (r.grossRevenuePaise || 0), 0);
+  const annualised = monthlyTurnover * 12;
+
   if (shop.gstNumber) {
+    const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 11);
+    const dueDate = nextMonth.toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
+    const gstRate = shop.businessType === "restaurant" ? 0.05 : 0.18;
+    const gstAmount = Math.round(monthlyTurnover * gstRate);
+
     return {
-      reply: `You're registered under GST (${shop.gstNumber}). GSTR-1 is due on the 11th of next month. Want me to help you prepare?`,
+      reply: `GST: ${shop.gstNumber}\nThis month's turnover: ${fmtRs(monthlyTurnover)}\nEstimated GST (${(gstRate * 100).toFixed(0)}%): ${fmtRs(gstAmount)}\nGSTR-1 due: ${dueDate}\n\nWant me to prepare a summary for your CA?`,
       intent: "gst_query",
       handled: true,
     };
   }
 
+  const threshold = shop.businessType === "restaurant" || shop.businessType === "salon" ? 2000000 : 4000000;
+  const thresholdLabel = threshold === 2000000 ? "₹20L (services)" : "₹40L (goods)";
+  const status = annualised > threshold ? "above" : "below";
+
   return {
-    reply: `Your turnover will determine if you need to register. Threshold is ₹20L for services, ₹40L for goods. What's your approximate monthly revenue?`,
+    reply: `Based on your sales, annualised revenue is ~${fmtRs(annualised)}.\nGST registration threshold: ${thresholdLabel}.\nYou're currently *${status}* the threshold.${status === "above" ? "\nConsider registering — I can help with the process." : ""}`,
     intent: "gst_query",
     handled: true,
   };
@@ -359,33 +394,51 @@ async function gstQuery(shop: any): Promise<HandlerResult> {
 // ── check_daily_pnl ────────────────────────────────────────
 
 async function checkDailyPnl(shop: any): Promise<HandlerResult> {
-  const { ledger } = await getUdharSummary(shop.id);
-
-  // Group by day for last 7 days
-  const days = new Map<string, { credits: number; debits: number }>();
   const now = new Date();
+  const weekAgo = new Date(now);
+  weekAgo.setDate(weekAgo.getDate() - 7);
+  const weekAgoStr = weekAgo.toISOString().split("T")[0];
 
+  const pnlRows = await db
+    .select()
+    .from(shopDailyPnl)
+    .where(
+      and(
+        eq(shopDailyPnl.shopBusinessId, shop.id),
+        gte(shopDailyPnl.date, weekAgoStr)
+      )
+    );
+
+  if (pnlRows.length === 0) {
+    // Fallback to udhar ledger
+    const { ledger } = await getUdharSummary(shop.id);
+    const today = now.toDateString();
+    const todayCredits = ledger
+      .filter((e) => e.createdAt && new Date(e.createdAt).toDateString() === today && e.transactionType === "debit")
+      .reduce((s, e) => s + e.amountPaise, 0);
+    return {
+      reply: `Today: ${fmtRs(todayCredits)}. Start recording sales to build your weekly P&L.`,
+      intent: "check_daily_pnl",
+      handled: true,
+    };
+  }
+
+  let weekTotal = 0;
+  let table = "Last 7 days:\n";
+  // Fill in all 7 days
   for (let i = 6; i >= 0; i--) {
     const d = new Date(now);
     d.setDate(d.getDate() - i);
-    days.set(d.toDateString(), { credits: 0, debits: 0 });
+    const dateStr = d.toISOString().split("T")[0];
+    const row = pnlRows.find((r) => r.date === dateStr);
+    const gross = row?.grossRevenuePaise || 0;
+    const udharG = row?.udharGivenPaise || 0;
+    const udharC = row?.udharCollectedPaise || 0;
+    weekTotal += gross;
+    const label = d.toLocaleDateString("en-IN", { weekday: "short", day: "numeric" });
+    table += `${label}: ${fmtRs(gross)}${udharG ? ` (udhar out: ${fmtRs(udharG)})` : ""}${udharC ? ` (collected: ${fmtRs(udharC)})` : ""}\n`;
   }
-
-  for (const entry of ledger) {
-    const day = entry.createdAt ? new Date(entry.createdAt).toDateString() : null;
-    if (day && days.has(day)) {
-      const d = days.get(day)!;
-      if (entry.transactionType === "credit") d.credits += entry.amountPaise;
-      else d.debits += entry.amountPaise;
-    }
-  }
-
-  let table = "Last 7 days:\n";
-  for (const [day, data] of days) {
-    const date = new Date(day);
-    const label = date.toLocaleDateString("en-IN", { weekday: "short", day: "numeric" });
-    table += `${label}: +${fmtRs(data.credits)} / -${fmtRs(data.debits)}\n`;
-  }
+  table += `\n*Week total: ${fmtRs(weekTotal)}*`;
 
   return { reply: table.trim(), intent: "check_daily_pnl", handled: true };
 }
@@ -416,24 +469,23 @@ async function recordSale(shop: any, message: string): Promise<HandlerResult> {
 }
 
 async function doRecordSale(shop: any, amountPaise: number): Promise<HandlerResult> {
-  // Get today's running total
-  const { ledger } = await getUdharSummary(shop.id);
-  const today = new Date().toDateString();
-  const todaySales = ledger
-    .filter((e) => e.createdAt && new Date(e.createdAt).toDateString() === today && e.transactionType === "credit")
-    .reduce((s, e) => s + e.amountPaise, 0);
-
   // Record as a credit entry (sale = money in)
   await db.insert(udharLedger).values({
     shopBusinessId: shop.id,
     customerName: "Walk-in Sale",
     amountPaise,
-    transactionType: "debit", // debit = money received
+    transactionType: "debit",
     note: "POS walk-in sale",
   });
 
+  // Update daily P&L
+  await upsertShopPnl(shop.id, { grossRevenue: amountPaise, cashSales: amountPaise });
+
+  // Get today's running total from P&L
+  const todayPnl = await getTodayPnl(shop.id);
+
   return {
-    reply: `Recorded ${fmtRs(amountPaise)}. Today's total: ${fmtRs(todaySales + amountPaise)}.`,
+    reply: `Recorded ${fmtRs(amountPaise)}. Today's total: ${fmtRs(todayPnl?.grossRevenuePaise || amountPaise)}.`,
     intent: "record_sale",
     handled: true,
   };
@@ -474,6 +526,9 @@ async function udharPayment(shop: any, message: string): Promise<HandlerResult> 
     transactionType: "debit",
     note: `Payment received via WhatsApp`,
   });
+
+  // Update daily P&L — udhar collected
+  await upsertShopPnl(shop.id, { udharCollected: amountPaise });
 
   const { byCustomer } = await getUdharSummary(shop.id);
   const remaining = byCustomer.get(customerName)?.total || 0;
@@ -745,6 +800,154 @@ function parseSimpleDate(str: string): Date {
   // Fallback: try native parse
   const parsed = new Date(str);
   return isNaN(parsed.getTime()) ? new Date(now.getTime() + 86400000) : parsed;
+}
+
+// ── shop daily P&L upsert ──────────────────────────────────
+
+interface PnlDelta {
+  grossRevenue?: number;
+  cashSales?: number;
+  upiSales?: number;
+  costOfGoods?: number;
+  udharGiven?: number;
+  udharCollected?: number;
+}
+
+async function upsertShopPnl(shopId: number, delta: PnlDelta) {
+  const today = new Date().toISOString().split("T")[0];
+
+  const [existing] = await db
+    .select()
+    .from(shopDailyPnl)
+    .where(and(eq(shopDailyPnl.shopBusinessId, shopId), eq(shopDailyPnl.date, today)))
+    .limit(1);
+
+  if (existing) {
+    const gross = (existing.grossRevenuePaise || 0) + (delta.grossRevenue || 0);
+    const cash = (existing.cashSalesPaise || 0) + (delta.cashSales || 0);
+    const upi = (existing.upiSalesPaise || 0) + (delta.upiSales || 0);
+    const cog = (existing.costOfGoodsPaise || 0) + (delta.costOfGoods || 0);
+    const ug = (existing.udharGivenPaise || 0) + (delta.udharGiven || 0);
+    const uc = (existing.udharCollectedPaise || 0) + (delta.udharCollected || 0);
+
+    await db
+      .update(shopDailyPnl)
+      .set({
+        grossRevenuePaise: gross,
+        cashSalesPaise: cash,
+        upiSalesPaise: upi,
+        costOfGoodsPaise: cog,
+        udharGivenPaise: ug,
+        udharCollectedPaise: uc,
+        netPaise: gross - cog + uc - ug,
+        updatedAt: new Date(),
+      })
+      .where(eq(shopDailyPnl.id, existing.id));
+  } else {
+    const gross = delta.grossRevenue || 0;
+    const cog = delta.costOfGoods || 0;
+    const ug = delta.udharGiven || 0;
+    const uc = delta.udharCollected || 0;
+
+    await db.insert(shopDailyPnl).values({
+      shopBusinessId: shopId,
+      date: today,
+      grossRevenuePaise: gross,
+      cashSalesPaise: delta.cashSales || 0,
+      upiSalesPaise: delta.upiSales || 0,
+      costOfGoodsPaise: cog,
+      udharGivenPaise: ug,
+      udharCollectedPaise: uc,
+      netPaise: gross - cog + uc - ug,
+    });
+  }
+}
+
+async function getTodayPnl(shopId: number) {
+  const today = new Date().toISOString().split("T")[0];
+  const [row] = await db
+    .select()
+    .from(shopDailyPnl)
+    .where(and(eq(shopDailyPnl.shopBusinessId, shopId), eq(shopDailyPnl.date, today)))
+    .limit(1);
+  return row;
+}
+
+// ── expiry_check ───────────────────────────────────────────
+
+async function expiryCheck(shop: any): Promise<HandlerResult> {
+  const items = await db
+    .select()
+    .from(shopInventory)
+    .where(eq(shopInventory.shopBusinessId, shop.id));
+
+  const now = new Date();
+  const weekFromNow = new Date(now.getTime() + 7 * 86400000);
+  const weekStr = weekFromNow.toISOString().split("T")[0];
+
+  const expiring = items.filter(
+    (i) => i.expiryDate && i.expiryDate <= weekStr
+  );
+
+  if (expiring.length === 0) {
+    return {
+      reply: "No items expiring in the next 7 days. All good!",
+      intent: "expiry_check",
+      handled: true,
+    };
+  }
+
+  const lines = expiring.map((i) => {
+    const daysLeft = Math.ceil(
+      (new Date(i.expiryDate!).getTime() - now.getTime()) / 86400000
+    );
+    return `⚠ ${i.itemName}: ${i.quantityOnHand || 0} units, expires in ${daysLeft} day${daysLeft !== 1 ? "s" : ""}`;
+  });
+
+  return {
+    reply: `Expiring this week:\n${lines.join("\n")}\n\nSuggested: 20% markdown to clear stock.`,
+    intent: "expiry_check",
+    handled: true,
+  };
+}
+
+// ── loan_query ─────────────────────────────────────────────
+
+async function loanQuery(shop: any): Promise<HandlerResult> {
+  // Get last 3 months of P&L
+  const threeMonthsAgo = new Date();
+  threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
+  const sinceDate = threeMonthsAgo.toISOString().split("T")[0];
+
+  const pnlRows = await db
+    .select()
+    .from(shopDailyPnl)
+    .where(
+      and(
+        eq(shopDailyPnl.shopBusinessId, shop.id),
+        gte(shopDailyPnl.date, sinceDate)
+      )
+    );
+
+  if (pnlRows.length < 30) {
+    const daysRecorded = pnlRows.length;
+    return {
+      reply: `I need at least 3 months of sales history to check loan eligibility. You have ${daysRecorded} day${daysRecorded !== 1 ? "s" : ""} recorded.\nKeep recording sales and check back!`,
+      intent: "loan_query",
+      handled: true,
+    };
+  }
+
+  const totalGross = pnlRows.reduce((s, r) => s + (r.grossRevenuePaise || 0), 0);
+  const months = pnlRows.length / 30;
+  const avgMonthly = Math.round(totalGross / months);
+  const eligible = avgMonthly * 3; // rough NBFC formula
+
+  return {
+    reply: `Based on avg monthly sales of ${fmtRs(avgMonthly)}, you may be eligible for up to *${fmtRs(eligible)}* in working capital.\n\nWant me to start a loan application with our NBFC partner?`,
+    intent: "loan_query",
+    handled: true,
+  };
 }
 
 // ── format ─────────────────────────────────────────────────
