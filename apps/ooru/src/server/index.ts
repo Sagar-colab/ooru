@@ -18,9 +18,11 @@ import kdsRouter from "./routes/kds.js";
 import posRouter from "./routes/pos.js";
 import dukaanRouter from "./routes/dukaan.js";
 import bcfsRouter from "./routes/bcfs.js";
+// morningBrief now managed via crons/index.ts
 import satelliteRouter from "./routes/satellite.js";
 import marketRouter from "./routes/market.js";
-import { scheduleMorningBrief } from "./crons/morningBrief.js";
+import adminRouter from "./routes/admin.js";
+import { registerAllCrons } from "./crons/index.js";
 import { createServer } from "http";
 import { setupSocket } from "./socket.js";
 
@@ -67,6 +69,7 @@ app.use("/dukaan", dukaanRouter);
 app.use("/api/bcfs", bcfsRouter);
 app.use("/api/satellite", satelliteRouter);
 app.use("/api/market", marketRouter);
+app.use("/api/admin", adminRouter);
 
 // Serve React dist in production
 if (process.env.NODE_ENV === "production") {
@@ -105,7 +108,7 @@ async function start() {
   httpServer.listen(PORT, "0.0.0.0", () => {
     console.log(`[ooru] Server running on port ${PORT}`);
     if (process.env.NODE_ENV === "production") {
-      scheduleMorningBrief();
+      registerAllCrons();
     }
   });
 }

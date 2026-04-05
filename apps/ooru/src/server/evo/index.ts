@@ -29,6 +29,10 @@ import {
   matchRiderIntent,
   handleRiderIntent,
 } from "./handlers/rider.js";
+import {
+  matchAdminIntent,
+  handleAdminIntent,
+} from "./handlers/admin.js";
 
 function getApiKey(): string | undefined {
   const sysKey = process.env.ANTHROPIC_API_KEY;
@@ -292,6 +296,15 @@ export async function runEvo(input: EvoInput): Promise<EvoResult> {
         classifyIntent(role, message).catch(() => {});
         return { reply: result.reply, intent: result.intent, model: "handler" };
       }
+    }
+  }
+
+  // Admin intents — check for any role if phone is admin
+  const adminIntent = matchAdminIntent(message);
+  if (adminIntent) {
+    const result = await handleAdminIntent(adminIntent, phone, message);
+    if (result.handled) {
+      return { reply: result.reply, intent: result.intent, model: "handler" };
     }
   }
 
