@@ -7,6 +7,10 @@ import {
   conversations,
   ratings,
   neighbourhoodBcfs,
+  homeServiceProviders,
+  homeServiceRequests,
+  ondcCatalogue,
+  shopBusinesses,
 } from "../../db/schema.js";
 import { eq, and, desc, inArray } from "drizzle-orm";
 import { fuzzyMatchItem } from "../utils/fuzzyMatch.js";
@@ -38,6 +42,9 @@ const INTENT_PATTERNS: [RegExp, string][] = [
   [/(cancel|don.?t\s*want|stop\s*order)/i, "cancel"],
   [/(confirm|yes\s*order|place\s*it|go\s*ahead)/i, "confirm_order"],
   [/(pothole|broken|garbage|water\s*leak|street\s*light|flooding|sewage|report|complaint|issue)/i, "report_issue"],
+  [/(need\s+a?\s*|find\s+a?\s*|looking\s+for\s+a?\s*)(plumb|electric|clean|maid|paint|carpenter|pet|repair|ac\s)/i, "find_provider"],
+  [/(i\s+need|get\s+me|buy)\s+(?!a\s+(?:plumb|electric|clean|maid|paint|carpenter))(crocin|milk|bread|eggs|maggi|medicine|tablet|paracetamol)/i, "quick_commerce"],
+  [/(pharmacy|kirana|store)\s+(open|near)/i, "store_search"],
 ];
 
 export function matchConsumerIntent(message: string): string | null {
@@ -72,6 +79,12 @@ export async function handleConsumerIntent(
       return confirmOrder(phone);
     case "report_issue":
       return reportIssue(phone, message);
+    case "find_provider":
+      return findProvider(phone, message);
+    case "quick_commerce":
+      return quickCommerce(phone, message);
+    case "store_search":
+      return storeSearch(phone, message);
     default:
       return NOT_HANDLED;
   }
@@ -705,6 +718,254 @@ async function reportIssue(phone: string, message: string): Promise<HandlerResul
   return {
     reply: `Reported! BCF #BCF-${bcf.id} created for "${title || "Issue"}". Your report is on the map. 📍`,
     intent: "report_issue",
+    handled: true,
+  };
+}
+
+// ── find_provider ──────────────────────────────────────────
+
+async function findProvider(phone: string, message: string): Promise<HandlerResult> {
+  const [consumer] = await db
+    .select()
+    .from(consumers)
+    .where(eq(consumers.phone, phone))
+    .limit(1);
+
+  const slug = consumer?.neighbourhoodSlug || "indiranagar";
+
+  // Detect category
+  const catMap: [RegExp, string][] = [
+    [/plumb/i, "plumber"],
+    [/electric/i, "electrician"],
+    [/(clean|maid|house\s*keep)/i, "cleaning"],
+    [/paint/i, "painter"],
+    [/carpenter/i, "carpenter"],
+    [/(pet|dog|cat)/i, "pet_care"],
+    [/(ac|air\s*condition)/i, "ac_repair"],
+    [/repair/i, "repair"],
+  ];
+
+  let category = "general";
+  for (const [pattern, cat] of catMap) {
+    if (pattern.test(message)) { category = cat; break; }
+  }
+
+  const providers = await db
+    .select()
+    .from(homeServiceProviders)
+    .where(
+      and(
+        eq(homeServiceProviders.neighbourhoodSlug, slug),
+        eq(homeServiceProviders.category, category),
+        eq(homeServiceProviders.isActive, true)
+      )
+    );
+
+  if (providers.length === 0) {
+    // Search all categories
+    const allProviders = await db
+      .select()
+      .from(homeServiceProviders)
+      .where(
+        and(
+          eq(homeServiceProviders.neighbourhoodSlug, slug),
+          eq(homeServiceProviders.isActive, true)
+        )
+      );
+
+    if (allProviders.length === 0) {
+      return {
+        reply: `No service providers found in ${slug} yet. Check back soon!`,
+        intent: "find_provider",
+        handled: true,
+      };
+    }
+
+    // Suggest from all
+    const cats = [...new Set(allProviders.map((p) => p.category))];
+    return {
+      reply: `No ${category} found nearby. Available services: ${cats.join(", ")}.\nTry: "I need a ${cats[0]}"`,
+      intent: "find_provider",
+      handled: true,
+    };
+  }
+
+  // Sort by badge level + rating
+  const badgeOrder: Record<string, number> = { expert: 0, trusted: 1, verified: 2, new: 3 };
+  const sorted = providers.sort((a, b) => {
+    const ba = badgeOrder[a.badgeLevel || "new"] ?? 4;
+    const bb = badgeOrder[b.badgeLevel || "new"] ?? 4;
+    if (ba !== bb) return ba - bb;
+    return (b.ratingAvg || 0) - (a.ratingAvg || 0);
+  });
+
+  const badgeEmoji: Record<string, string> = { expert: "🏆", trusted: "⭐", verified: "✅", new: "🆕" };
+
+  const top3 = sorted.slice(0, 3);
+  const lines = top3.map((p, i) => {
+    const badge = badgeEmoji[p.badgeLevel || "new"] || "🆕";
+    const minP = p.priceRangeMinPaise ? fmtRs(p.priceRangeMinPaise) : "?";
+    const maxP = p.priceRangeMaxPaise ? fmtRs(p.priceRangeMaxPaise) : "?";
+    return `${i + 1}. *${p.name}* ${badge} ${p.badgeLevel} · ${minP}–${maxP} · ${p.ratingAvg}★`;
+  });
+
+  // Create service request
+  if (consumer) {
+    await db.insert(homeServiceRequests).values({
+      consumerId: consumer.id,
+      category,
+      description: message,
+      neighbourhoodSlug: slug,
+    });
+  }
+
+  const waLinks = top3
+    .map((p) => `[Call ${p.name.split(" ")[0]}](https://wa.me/91${p.phone})`)
+    .join("  ");
+
+  return {
+    reply: `Found ${top3.length} ${category}${top3.length > 1 ? "s" : ""} near you:\n\n${lines.join("\n")}\n\n${waLinks}`,
+    intent: "find_provider",
+    handled: true,
+  };
+}
+
+// ── quick_commerce ─────────────────────────────────────────
+
+async function quickCommerce(phone: string, message: string): Promise<HandlerResult> {
+  const [consumer] = await db
+    .select()
+    .from(consumers)
+    .where(eq(consumers.phone, phone))
+    .limit(1);
+
+  const slug = consumer?.neighbourhoodSlug || "indiranagar";
+
+  // Extract item names from message
+  const cleanMsg = message
+    .replace(/^(i\s+need|get\s+me|buy)\s+/i, "")
+    .replace(/\s+and\s+/gi, ",")
+    .trim();
+  const searchTerms = cleanMsg.split(/[,]+/).map((s) => s.trim()).filter(Boolean);
+
+  // Search ONDC catalogue
+  const allItems = await db
+    .select({
+      id: ondcCatalogue.id,
+      itemName: ondcCatalogue.itemName,
+      pricePaise: ondcCatalogue.pricePaise,
+      shopBusinessId: ondcCatalogue.shopBusinessId,
+      shopName: shopBusinesses.businessName,
+      shopPhone: shopBusinesses.phone,
+    })
+    .from(ondcCatalogue)
+    .innerJoin(shopBusinesses, eq(ondcCatalogue.shopBusinessId, shopBusinesses.id))
+    .where(
+      and(
+        eq(ondcCatalogue.neighbourhoodSlug, slug),
+        eq(ondcCatalogue.isAvailable, true)
+      )
+    );
+
+  const matches: typeof allItems = [];
+  for (const term of searchTerms) {
+    const found = allItems.find((i) =>
+      i.itemName!.toLowerCase().includes(term.toLowerCase())
+    );
+    if (found) matches.push(found);
+  }
+
+  if (matches.length === 0) {
+    return {
+      reply: `Couldn't find "${cleanMsg}" in nearby stores. Try browsing the market or ordering from a restaurant.`,
+      intent: "quick_commerce",
+      handled: true,
+    };
+  }
+
+  const lines = matches.map((m) => `${m.itemName} (${fmtRs(m.pricePaise!)}) at ${m.shopName} · ~5 min`);
+
+  // Store pending for "order it"
+  const [convo] = await db
+    .select()
+    .from(conversations)
+    .where(eq(conversations.phone, phone))
+    .limit(1);
+
+  if (convo) {
+    const pendingItems = matches.map((m) => ({
+      id: m.id,
+      name: m.itemName,
+      qty: 1,
+      pricePaise: m.pricePaise,
+    }));
+    const merchantId = matches[0].shopBusinessId;
+    const merchantName = matches[0].shopName;
+
+    await db
+      .update(conversations)
+      .set({
+        state: {
+          ...((convo.state as any) || {}),
+          pendingOrder: { merchantId, merchantName, items: pendingItems, step: "pending_confirmation" },
+        },
+      })
+      .where(eq(conversations.id, convo.id));
+  }
+
+  return {
+    reply: `Found near you:\n${lines.join("\n")}\n\nReply *confirm* to order!`,
+    intent: "quick_commerce",
+    handled: true,
+  };
+}
+
+// ── store_search ───────────────────────────────────────────
+
+async function storeSearch(phone: string, message: string): Promise<HandlerResult> {
+  const [consumer] = await db
+    .select()
+    .from(consumers)
+    .where(eq(consumers.phone, phone))
+    .limit(1);
+
+  const slug = consumer?.neighbourhoodSlug || "indiranagar";
+
+  // Detect store type
+  const typeMap: [RegExp, string][] = [
+    [/pharmacy/i, "pharmacy"],
+    [/kirana|grocery/i, "kirana"],
+    [/salon|barber/i, "salon"],
+    [/restaurant/i, "restaurant"],
+  ];
+
+  let searchType: string | null = null;
+  for (const [pattern, type] of typeMap) {
+    if (pattern.test(message)) { searchType = type; break; }
+  }
+
+  const shops = await db
+    .select()
+    .from(shopBusinesses)
+    .where(eq(shopBusinesses.neighbourhoodSlug, slug));
+
+  const filtered = searchType
+    ? shops.filter((s) => s.businessType === searchType && s.isActive)
+    : shops.filter((s) => s.isActive);
+
+  if (filtered.length === 0) {
+    return {
+      reply: `No ${searchType || "stores"} found in ${slug}.`,
+      intent: "store_search",
+      handled: true,
+    };
+  }
+
+  const lines = filtered.map((s) => `${s.businessName} (${s.businessType}) · ${s.address || slug}`);
+
+  return {
+    reply: `${searchType || "Stores"} in ${slug}:\n${lines.join("\n")}`,
+    intent: "store_search",
     handled: true,
   };
 }

@@ -484,6 +484,51 @@ export const groupProcurementOrders = pgTable(
   (t) => [index("group_procurement_slug_idx").on(t.neighbourhoodSlug)]
 );
 
+// ── home_service_providers ─────────────────────────────────
+export const homeServiceProviders = pgTable(
+  "home_service_providers",
+  {
+    id: serial("id").primaryKey(),
+    phone: text("phone").unique().notNull(),
+    name: text("name").notNull(),
+    category: text("category").notNull(),
+    aadhaarHash: text("aadhaar_hash"),
+    badgeLevel: text("badge_level").default("new"),
+    ratingAvg: real("rating_avg").default(5.0),
+    totalJobs: integer("total_jobs").default(0),
+    priceRangeMinPaise: integer("price_range_min_paise"),
+    priceRangeMaxPaise: integer("price_range_max_paise"),
+    areas: text("areas").array(),
+    listingFeePaidTill: date("listing_fee_paid_till"),
+    isActive: boolean("is_active").default(true),
+    neighbourhoodSlug: text("neighbourhood_slug"),
+    lat: real("lat"),
+    lng: real("lng"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [
+    index("home_service_providers_slug_cat_idx").on(t.neighbourhoodSlug, t.category),
+  ]
+);
+
+// ── home_service_requests ──────────────────────────────────
+export const homeServiceRequests = pgTable(
+  "home_service_requests",
+  {
+    id: serial("id").primaryKey(),
+    consumerId: integer("consumer_id").references(() => consumers.id),
+    category: text("category").notNull(),
+    description: text("description"),
+    matchedProviderId: integer("matched_provider_id").references(
+      () => homeServiceProviders.id
+    ),
+    status: text("status").default("requested"),
+    neighbourhoodSlug: text("neighbourhood_slug"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [index("home_service_requests_consumer_idx").on(t.consumerId)]
+);
+
 // ── ondc_catalogue ─────────────────────────────────────────
 export const ondcCatalogue = pgTable(
   "ondc_catalogue",

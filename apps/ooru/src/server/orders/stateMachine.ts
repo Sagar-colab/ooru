@@ -289,23 +289,13 @@ async function updateDailyPnl(
 
 // ── Order number generation ────────────────────────────────
 
+let orderSeq = 0;
 export async function generateOrderNumber(merchantId: number): Promise<string> {
   const today = new Date();
   const dateStr = today.toISOString().split("T")[0].replace(/-/g, "");
-
-  // Count today's orders for this merchant
-  const [result] = await db
-    .select({ count: sql<number>`count(*)::int` })
-    .from(orders)
-    .where(
-      and(
-        eq(orders.merchantId, merchantId),
-        sql`date(${orders.createdAt}) = current_date`
-      )
-    );
-
-  const seq = (result?.count || 0) + 1;
-  return `OO-${dateStr}-${String(seq).padStart(4, "0")}`;
+  const ts = String(Date.now()).slice(-5);
+  orderSeq++;
+  return `OO-${dateStr}-${ts}${String(orderSeq).padStart(2, "0")}`;
 }
 
 // ── Consumer notifications ──────────────────────────────────
