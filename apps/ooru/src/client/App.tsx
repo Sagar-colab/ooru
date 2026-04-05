@@ -1,7 +1,8 @@
-import { Route, Switch, Link } from "wouter";
+import { Route, Switch, Link, Redirect } from "wouter";
 import DemoChat from "./pages/DemoChat";
 import KDS from "./pages/KDS";
 import POS from "./pages/POS";
+import Neighbourhood from "./pages/Neighbourhood";
 
 export default function App() {
   return (
@@ -9,11 +10,18 @@ export default function App() {
       <Route path="/demo/chat" component={DemoChat} />
       <Route path="/kds/:merchantId" component={KDS} />
       <Route path="/pos/:merchantId" component={POS} />
+      <Route path="/neighbourhood/:slug" component={Neighbourhood} />
+      <Route path="/">
+        <Redirect to="/neighbourhood/indiranagar" />
+      </Route>
       <Route>
         <div style={{ fontFamily: "system-ui", padding: "2rem", textAlign: "center" }}>
           <h1>Ooru</h1>
           <p>Neighbourhood intelligence platform</p>
           <div style={{ display: "flex", flexDirection: "column", gap: "12px", marginTop: "24px" }}>
+            <Link href="/neighbourhood/indiranagar" style={{ color: "#8B5CF6", fontSize: "18px" }}>
+              Neighbourhood Map
+            </Link>
             <Link href="/demo/chat" style={{ color: "#00a884", fontSize: "18px" }}>
               DemoChat
             </Link>

@@ -6,6 +6,7 @@ import {
   consumers,
   conversations,
   ratings,
+  neighbourhoodBcfs,
 } from "../../db/schema.js";
 import { eq, and, desc, inArray } from "drizzle-orm";
 import { fuzzyMatchItem } from "../utils/fuzzyMatch.js";
@@ -36,6 +37,7 @@ const INTENT_PATTERNS: [RegExp, string][] = [
   [/(where|track|status|eta|how\s*long|my\s*order)/i, "track"],
   [/(cancel|don.?t\s*want|stop\s*order)/i, "cancel"],
   [/(confirm|yes\s*order|place\s*it|go\s*ahead)/i, "confirm_order"],
+  [/(pothole|broken|garbage|water\s*leak|street\s*light|flooding|sewage|report|complaint|issue)/i, "report_issue"],
 ];
 
 export function matchConsumerIntent(message: string): string | null {
@@ -68,6 +70,8 @@ export async function handleConsumerIntent(
       return rate(phone, message);
     case "confirm_order":
       return confirmOrder(phone);
+    case "report_issue":
+      return reportIssue(phone, message);
     default:
       return NOT_HANDLED;
   }
@@ -651,6 +655,56 @@ async function rate(phone: string, message: string): Promise<HandlerResult> {
   return {
     reply: "How was your last order? Reply 👍 or 👎",
     intent: "rate",
+    handled: true,
+  };
+}
+
+// ── report_issue ───────────────────────────────────────────
+
+async function reportIssue(phone: string, message: string): Promise<HandlerResult> {
+  const [consumer] = await db
+    .select()
+    .from(consumers)
+    .where(eq(consumers.phone, phone))
+    .limit(1);
+
+  const slug = consumer?.neighbourhoodSlug || "indiranagar";
+
+  // Detect category from keywords
+  const categories: [RegExp, string][] = [
+    [/(pothole|road|crack|bump)/i, "road"],
+    [/(water|leak|pipe|flood|sewage|drain)/i, "water"],
+    [/(light|lamp|dark|street\s*light)/i, "light"],
+    [/(garbage|waste|trash|dump|litter)/i, "waste"],
+    [/(noise|loud|construction)/i, "noise"],
+  ];
+
+  let category = "general";
+  for (const [pattern, cat] of categories) {
+    if (pattern.test(message)) { category = cat; break; }
+  }
+
+  const title = message
+    .replace(/(report|complaint|issue|there\s*is\s*(a|an)?)/gi, "")
+    .trim()
+    .slice(0, 100);
+
+  const phoneHash = phone.slice(-4);
+
+  const [bcf] = await db
+    .insert(neighbourhoodBcfs)
+    .values({
+      neighbourhoodSlug: slug,
+      reporterPhoneHash: phoneHash,
+      category,
+      title: title || "Issue reported",
+      description: message,
+    })
+    .returning();
+
+  return {
+    reply: `Reported! BCF #BCF-${bcf.id} created for "${title || "Issue"}". Your report is on the map. 📍`,
+    intent: "report_issue",
     handled: true,
   };
 }
