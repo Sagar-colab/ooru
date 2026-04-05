@@ -14,8 +14,13 @@ import shopBusinessesRouter from "./routes/shopBusinesses.js";
 import evoRouter from "./routes/evo.js";
 import whatsappRouter from "./routes/whatsapp.js";
 import demoRouter from "./routes/demo.js";
+import kdsRouter from "./routes/kds.js";
+import { createServer } from "http";
+import { setupSocket } from "./socket.js";
 
 const app = express();
+const httpServer = createServer(app);
+setupSocket(httpServer);
 const PORT = Number(process.env.PORT) || 3002;
 
 // Middleware
@@ -50,6 +55,7 @@ app.use("/api/shop-businesses", shopBusinessesRouter);
 app.use("/api/evo", evoRouter);
 app.use("/api/webhook", whatsappRouter);
 app.use("/api/demo", demoRouter);
+app.use("/api/kds", kdsRouter);
 
 // Serve React dist in production
 if (process.env.NODE_ENV === "production") {
@@ -85,7 +91,7 @@ async function start() {
     process.exit(1);
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
+  httpServer.listen(PORT, "0.0.0.0", () => {
     console.log(`[ooru] Server running on port ${PORT}`);
   });
 }
