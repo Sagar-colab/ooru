@@ -15,6 +15,7 @@ import evoRouter from "./routes/evo.js";
 import whatsappRouter from "./routes/whatsapp.js";
 import demoRouter from "./routes/demo.js";
 import kdsRouter from "./routes/kds.js";
+import posRouter from "./routes/pos.js";
 import { createServer } from "http";
 import { setupSocket } from "./socket.js";
 
@@ -56,6 +57,7 @@ app.use("/api/evo", evoRouter);
 app.use("/api/webhook", whatsappRouter);
 app.use("/api/demo", demoRouter);
 app.use("/api/kds", kdsRouter);
+app.use("/api/pos", posRouter);
 
 // Serve React dist in production
 if (process.env.NODE_ENV === "production") {

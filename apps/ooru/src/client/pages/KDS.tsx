@@ -1,5 +1,5 @@
 import { useEffect, useRef, useCallback, useState } from "react";
-import { useParams } from "wouter";
+import { useParams, Link } from "wouter";
 import { io, Socket } from "socket.io-client";
 import { get, set as idbSet } from "idb-keyval";
 import { useKDSStore, type KDSOrder } from "../stores/kdsStore";
@@ -222,6 +222,13 @@ export default function KDS() {
           >
             {soundEnabled ? "🔔" : "🔇"}
           </button>
+
+          <Link
+            href={`/pos/${merchantId}`}
+            className="px-3 py-1 text-xs rounded-full bg-gray-800 text-purple-400 hover:bg-gray-700"
+          >
+            POS →
+          </Link>
         </div>
       </div>
 

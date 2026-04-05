@@ -1,12 +1,14 @@
 import { Route, Switch, Link } from "wouter";
 import DemoChat from "./pages/DemoChat";
 import KDS from "./pages/KDS";
+import POS from "./pages/POS";
 
 export default function App() {
   return (
     <Switch>
       <Route path="/demo/chat" component={DemoChat} />
       <Route path="/kds/:merchantId" component={KDS} />
+      <Route path="/pos/:merchantId" component={POS} />
       <Route>
         <div style={{ fontFamily: "system-ui", padding: "2rem", textAlign: "center" }}>
           <h1>Ooru</h1>
@@ -17,6 +19,9 @@ export default function App() {
             </Link>
             <Link href="/kds/1" style={{ color: "#3B82F6", fontSize: "18px" }}>
               KDS — Meghana Foods
+            </Link>
+            <Link href="/pos/1" style={{ color: "#8B5CF6", fontSize: "18px" }}>
+              POS — Meghana Foods
             </Link>
           </div>
         </div>
