@@ -434,6 +434,56 @@ export const ratings = pgTable(
   (t) => [index("ratings_order_id_idx").on(t.orderId)]
 );
 
+// ── suppliers ──────────────────────────────────────────────
+export const suppliers = pgTable("suppliers", {
+  id: serial("id").primaryKey(),
+  businessName: text("business_name").notNull(),
+  ownerName: text("owner_name"),
+  phone: text("phone").notNull(),
+  categories: text("categories").array().notNull(),
+  serviceAreaSlugs: text("service_area_slugs").array(),
+  priceList: jsonb("price_list").default("[]"),
+  paymentTerms: text("payment_terms").default("cash_on_delivery"),
+  isActive: boolean("is_active").default(true),
+  neighbourhoodSlugs: text("neighbourhood_slugs").array(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+});
+
+// ── procurement_orders ─────────────────────────────────────
+export const procurementOrders = pgTable(
+  "procurement_orders",
+  {
+    id: serial("id").primaryKey(),
+    shopBusinessId: integer("shop_business_id").references(() => shopBusinesses.id),
+    supplierId: integer("supplier_id").references(() => suppliers.id),
+    items: jsonb("items").notNull(),
+    totalPaise: integer("total_paise"),
+    status: text("status").default("pending"),
+    deliveryDate: date("delivery_date"),
+    notes: text("notes"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [index("procurement_orders_shop_idx").on(t.shopBusinessId)]
+);
+
+// ── group_procurement_orders ───────────────────────────────
+export const groupProcurementOrders = pgTable(
+  "group_procurement_orders",
+  {
+    id: serial("id").primaryKey(),
+    supplierId: integer("supplier_id").references(() => suppliers.id),
+    neighbourhoodSlug: text("neighbourhood_slug").notNull(),
+    participatingShopIds: integer("participating_shop_ids").array(),
+    consolidatedItems: jsonb("consolidated_items").notNull(),
+    totalValuePaise: integer("total_value_paise"),
+    status: text("status").default("open"),
+    closesAt: timestamp("closes_at", { withTimezone: true }),
+    deliveryDate: date("delivery_date"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [index("group_procurement_slug_idx").on(t.neighbourhoodSlug)]
+);
+
 // ── satellite_cache ────────────────────────────────────────
 export const satelliteCache = pgTable(
   "satellite_cache",

@@ -6,6 +6,7 @@ import {
   consumers,
   shopBusinesses,
   riders,
+  suppliers,
 } from "../db/schema.js";
 import { eq, and } from "drizzle-orm";
 import { detectRole, runEvo, isNoise } from "../evo/index.js";
@@ -21,7 +22,8 @@ const WELCOME_MSG = `Hi! I'm Ooru — your neighbourhood on WhatsApp. ✨
 Are you a:
 1️⃣ Resident / Customer
 2️⃣ Shop owner
-3️⃣ Rider`;
+3️⃣ Rider
+4️⃣ Supplier / Distributor`;
 
 const BIZ_TYPES = [
   "kirana",
@@ -82,7 +84,14 @@ async function handleNewUser(
         .where(eq(conversations.id, convo!.id));
       return "Welcome, delivery partner! What's your name?";
     }
-    return "Please reply 1, 2, or 3.";
+    if (choice === "4") {
+      await db
+        .update(conversations)
+        .set({ state: { step: "awaiting_supplier_name" } })
+        .where(eq(conversations.id, convo!.id));
+      return "Welcome, supplier! What's your business name?";
+    }
+    return "Please reply 1, 2, 3, or 4.";
   }
 
   // Consumer — awaiting name
@@ -217,6 +226,49 @@ async function handleNewUser(
       })
       .where(eq(conversations.id, convo!.id));
     return `Welcome ${riderName}! 🏍️ You're registered as a new rider in ${zone}.\nTraining starts now — 5 short modules. Type *START* to begin.`;
+  }
+
+  // Supplier — awaiting name
+  if (state.step === "awaiting_supplier_name") {
+    await db
+      .update(conversations)
+      .set({ state: { step: "awaiting_supplier_category", supplierName: text.trim() } })
+      .where(eq(conversations.id, convo!.id));
+    return `Got it — "${text.trim()}". What do you supply?\n1️⃣ Grocery/FMCG\n2️⃣ Fresh Produce\n3️⃣ Beverages\n4️⃣ Pharma\n5️⃣ Packaging\n6️⃣ Other`;
+  }
+
+  // Supplier — awaiting category
+  if (state.step === "awaiting_supplier_category") {
+    const catMap: Record<string, string> = {
+      "1": "grocery", "2": "fresh_produce", "3": "beverages",
+      "4": "pharma", "5": "packaging", "6": "other",
+    };
+    const category = catMap[text.trim()] || "other";
+    await db
+      .update(conversations)
+      .set({ state: { ...state, step: "awaiting_supplier_area", supplierCategory: category } })
+      .where(eq(conversations.id, convo!.id));
+    return "Which neighbourhoods do you serve? (e.g. \"Indiranagar, Koramangala\")";
+  }
+
+  // Supplier — awaiting area
+  if (state.step === "awaiting_supplier_area") {
+    const supplierName = state.supplierName || "Supplier";
+    const category = state.supplierCategory || "other";
+    const areas = text.split(/[,\s]+/).map((s: string) => s.trim().toLowerCase()).filter(Boolean);
+
+    await db.insert(suppliers).values({
+      businessName: supplierName,
+      phone,
+      categories: [category],
+      neighbourhoodSlugs: areas.length > 0 ? areas : ["indiranagar"],
+      serviceAreaSlugs: areas.length > 0 ? areas : ["indiranagar"],
+    });
+    await db
+      .update(conversations)
+      .set({ role: "supplier", persona: "supplier", state: { step: "done" } })
+      .where(eq(conversations.id, convo!.id));
+    return `You're set up! 🎉 Shop owners in ${areas.join(", ") || "your area"} can now order from you via WhatsApp.`;
   }
 
   return WELCOME_MSG;

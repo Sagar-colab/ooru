@@ -7,8 +7,13 @@ import {
   shopJobCards,
   shopDailyPnl,
   orders,
+  suppliers,
+  procurementOrders,
+  groupProcurementOrders,
+  shopBusinesses as shopBizTable,
 } from "../../db/schema.js";
-import { eq, and, lt, lte, gte, sql, desc } from "drizzle-orm";
+import { eq, and, lt, lte, gte, sql, desc, inArray } from "drizzle-orm";
+import { fuzzyMatchItem } from "../utils/fuzzyMatch.js";
 
 // ── handler result ─────────────────────────────────────────
 
@@ -79,6 +84,10 @@ const INTENT_PATTERNS: [RegExp, string][] = [
   [/(owe|baki).*(how\s*much)/i, "udhar_check"],
   [/(expir|expiry|expire|kharab|shelf\s*life)/i, "expiry_check"],
   [/(loan|working\s*capital|paisa\s*chahiye|udhar\s*chahiye|credit\s*line)/i, "loan_query"],
+  [/(order|buy)\s+\d+\s+.+\s+from\s+/i, "procurement_order"],
+  [/(order\s+usual|reorder\s+stock|thursday\s+stock|weekly\s+order)/i, "procurement_reorder"],
+  [/(group\s*(order|buy)|bulk\s*order)/i, "supplier_group_buy"],
+  [/(start\s*a?\s*group)/i, "start_group_buy"],
 ];
 
 export function matchShopOwnerIntent(message: string): string | null {
@@ -132,6 +141,14 @@ export async function handleShopOwnerIntent(
       return expiryCheck(shop);
     case "loan_query":
       return loanQuery(shop);
+    case "procurement_order":
+      return procurementOrder(shop, message);
+    case "procurement_reorder":
+      return procurementReorder(shop);
+    case "supplier_group_buy":
+      return supplierGroupBuy(shop, message);
+    case "start_group_buy":
+      return startGroupBuy(shop, message);
     default:
       return NOT_HANDLED;
   }
@@ -946,6 +963,196 @@ async function loanQuery(shop: any): Promise<HandlerResult> {
   return {
     reply: `Based on avg monthly sales of ${fmtRs(avgMonthly)}, you may be eligible for up to *${fmtRs(eligible)}* in working capital.\n\nWant me to start a loan application with our NBFC partner?`,
     intent: "loan_query",
+    handled: true,
+  };
+}
+
+// ── procurement_order ──────────────────────────────────────
+
+async function procurementOrder(shop: any, message: string): Promise<HandlerResult> {
+  // Parse: "order 50 packets of Maggi from Ganesh Traders"
+  const match = message.match(
+    /(?:order|buy)\s+(\d+)\s+(?:packets?\s+(?:of\s+)?|bags?\s+(?:of\s+)?|units?\s+(?:of\s+)?)?(.+?)\s+from\s+(.+)$/i
+  );
+
+  if (!match) {
+    return {
+      reply: 'Format: "order 50 Maggi from Ganesh Traders"',
+      intent: "procurement_order",
+      handled: true,
+    };
+  }
+
+  const qty = parseInt(match[1]);
+  const itemName = match[2].trim();
+  const supplierName = match[3].trim();
+
+  // Find supplier
+  const allSuppliers = await db.select().from(suppliers);
+  const found = fuzzyMatchItem(
+    allSuppliers.map((s) => ({ ...s, name: s.businessName })),
+    supplierName
+  );
+
+  if (!found) {
+    return {
+      reply: `Couldn't find supplier "${supplierName}". Available: ${allSuppliers.map((s) => s.businessName).join(", ") || "none yet"}.`,
+      intent: "procurement_order",
+      handled: true,
+    };
+  }
+
+  // Create procurement order
+  const [po] = await db
+    .insert(procurementOrders)
+    .values({
+      shopBusinessId: shop.id,
+      supplierId: found.id,
+      items: [{ name: itemName, qty }],
+      status: "pending",
+    })
+    .returning();
+
+  // Format WA message for supplier
+  const waText = `New order from ${shop.businessName}:\n${itemName} × ${qty}\nDeliver to: ${shop.address || "TBD"}\nContact: ${shop.phone}`;
+  const waUrl = `https://wa.me/91${found.phone}?text=${encodeURIComponent(waText)}`;
+
+  return {
+    reply: `Order #PO-${po.id} created!\n${itemName} × ${qty} from ${found.businessName}\n\nSend to supplier → ${waUrl}`,
+    intent: "procurement_order",
+    handled: true,
+  };
+}
+
+// ── procurement_reorder ────────────────────────────────────
+
+async function procurementReorder(shop: any): Promise<HandlerResult> {
+  const [lastPO] = await db
+    .select()
+    .from(procurementOrders)
+    .where(eq(procurementOrders.shopBusinessId, shop.id))
+    .orderBy(desc(procurementOrders.createdAt))
+    .limit(1);
+
+  if (!lastPO) {
+    return {
+      reply: "No previous procurement orders found. Try: \"order 50 Maggi from Ganesh Traders\"",
+      intent: "procurement_reorder",
+      handled: true,
+    };
+  }
+
+  // Duplicate
+  const [po] = await db
+    .insert(procurementOrders)
+    .values({
+      shopBusinessId: shop.id,
+      supplierId: lastPO.supplierId,
+      items: lastPO.items,
+      status: "pending",
+    })
+    .returning();
+
+  const items = (lastPO.items as any[]) || [];
+  const itemList = items.map((i: any) => `${i.name} × ${i.qty}`).join(", ");
+
+  let supplierPhone = "";
+  if (lastPO.supplierId) {
+    const [s] = await db.select().from(suppliers).where(eq(suppliers.id, lastPO.supplierId)).limit(1);
+    supplierPhone = s?.phone || "";
+  }
+
+  const waText = `Reorder from ${shop.businessName}: ${itemList}`;
+  const waUrl = supplierPhone ? `https://wa.me/91${supplierPhone}?text=${encodeURIComponent(waText)}` : "";
+
+  return {
+    reply: `Reorder #PO-${po.id} created!\n${itemList}\n${waUrl ? `\nSend → ${waUrl}` : ""}`,
+    intent: "procurement_reorder",
+    handled: true,
+  };
+}
+
+// ── supplier_group_buy ─────────────────────────────────────
+
+async function supplierGroupBuy(shop: any, message: string): Promise<HandlerResult> {
+  const slug = shop.neighbourhoodSlug || "indiranagar";
+
+  // Check for open group orders
+  const openOrders = await db
+    .select()
+    .from(groupProcurementOrders)
+    .where(
+      and(
+        eq(groupProcurementOrders.neighbourhoodSlug, slug),
+        eq(groupProcurementOrders.status, "open")
+      )
+    );
+
+  if (openOrders.length === 0) {
+    return {
+      reply: "No group orders active right now. Want me to start one? Say \"start a group order\".",
+      intent: "supplier_group_buy",
+      handled: true,
+    };
+  }
+
+  const lines = openOrders.map((o) => {
+    const items = (o.consolidatedItems as any[]) || [];
+    const itemList = items.map((i: any) => `${i.name} × ${i.qty}`).join(", ");
+    const shops = (o.participatingShopIds || []).length;
+    return `Group #GPO-${o.id}: ${itemList}\n${shops} shop${shops !== 1 ? "s" : ""} joined. Closes: ${o.closesAt ? new Date(o.closesAt).toLocaleDateString("en-IN") : "TBD"}`;
+  });
+
+  return {
+    reply: `Active group orders in ${slug}:\n\n${lines.join("\n\n")}\n\nReply with the group order number to join.`,
+    intent: "supplier_group_buy",
+    handled: true,
+  };
+}
+
+// ── start_group_buy ────────────────────────────────────────
+
+async function startGroupBuy(shop: any, message: string): Promise<HandlerResult> {
+  const slug = shop.neighbourhoodSlug || "indiranagar";
+
+  // Parse item from message: "start a group Nestle order" or "start group order for rice"
+  const itemMatch = message.match(/group\s+(?:order\s+(?:for\s+)?)?(.+?)(?:\s+order)?$/i);
+  const itemName = itemMatch?.[1]?.trim() || "General supplies";
+
+  const closesAt = new Date(Date.now() + 48 * 60 * 60 * 1000); // 48 hours
+
+  const [gpo] = await db
+    .insert(groupProcurementOrders)
+    .values({
+      neighbourhoodSlug: slug,
+      participatingShopIds: [shop.id],
+      consolidatedItems: [{ name: itemName, qty: 0 }],
+      status: "open",
+      closesAt,
+    })
+    .returning();
+
+  // Find other shops in neighbourhood to notify
+  const otherShops = await db
+    .select()
+    .from(shopBizTable)
+    .where(
+      and(
+        eq(shopBizTable.neighbourhoodSlug, slug),
+        eq(shopBizTable.isActive, true)
+      )
+    );
+
+  const notifyCount = otherShops.filter((s) => s.id !== shop.id).length;
+  for (const s of otherShops) {
+    if (s.id !== shop.id) {
+      console.log(`[group-buy] Notifying ${s.businessName} (${s.phone}) about GPO-${gpo.id}`);
+    }
+  }
+
+  return {
+    reply: `Group order #GPO-${gpo.id} started! 🛒\n"${itemName}" — open for 48 hours.\n${notifyCount} other shop${notifyCount !== 1 ? "s" : ""} in ${slug} notified.`,
+    intent: "start_group_buy",
     handled: true,
   };
 }
