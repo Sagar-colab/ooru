@@ -1,7 +1,8 @@
 import { db } from "../db/index.js";
-import { orders, merchants, consumers, dailyPnl } from "../db/schema.js";
+import { orders, merchants, consumers, dailyPnl, conversations } from "../db/schema.js";
 import { eq, and, sql } from "drizzle-orm";
 import { emitToMerchant } from "../socket.js";
+import { sendWhatsApp } from "../evo/gupshup.js";
 
 // ── States ─────────────────────────────────────────────────
 
@@ -105,7 +106,9 @@ export async function advanceOrder(
   }
 
   // WhatsApp notification (log for now)
-  logNotification(updated, targetStatus, actorRole);
+  notifyConsumer(updated, targetStatus, actorRole).catch((e) =>
+    console.error("[notify] Error:", e.message)
+  );
 
   // Update daily P&L on delivered
   if (targetStatus === "delivered" && updated.merchantId) {
@@ -297,22 +300,63 @@ export async function generateOrderNumber(merchantId: number): Promise<string> {
   return `OO-${dateStr}-${String(seq).padStart(4, "0")}`;
 }
 
-// ── Notification logging ───────────────────────────────────
+// ── Consumer notifications ──────────────────────────────────
 
-function logNotification(order: any, newStatus: string, actor: string) {
+async function notifyConsumer(order: any, newStatus: string, actor: string) {
+  if (!order.consumerId) return;
+
+  // Look up consumer phone
+  const [consumer] = await db
+    .select()
+    .from(consumers)
+    .where(eq(consumers.id, order.consumerId))
+    .limit(1);
+  if (!consumer) return;
+
+  // Look up merchant name
+  let merchantName = "restaurant";
+  if (order.merchantId) {
+    const [m] = await db
+      .select()
+      .from(merchants)
+      .where(eq(merchants.id, order.merchantId))
+      .limit(1);
+    if (m) merchantName = m.name;
+  }
+
   const msgs: Record<string, string> = {
-    accepted: `Your order #${order.orderNumber} has been accepted!`,
-    preparing: `Your order #${order.orderNumber} is being prepared.`,
-    ready: `Your order #${order.orderNumber} is ready!`,
-    pickup_assigned: `A rider has been assigned to pick up your order.`,
-    picked_up: `Your order has been picked up and is on its way!`,
-    out_for_delivery: `Your order is out for delivery!`,
-    at_gate: `Your rider is at the gate with your order.`,
-    delivered: `Your order #${order.orderNumber} has been delivered. Enjoy!`,
+    accepted: `Order confirmed by ${merchantName}! 🍳 Preparing now. ETA ~20 min.`,
+    preparing: `Your order #${order.orderNumber} is being prepared at ${merchantName}.`,
+    ready: `Your order is ready and being picked up! 📦`,
+    out_for_delivery: `On the way! 🏍️ Rider is ~10 min away.`,
+    delivered: `Delivered! 🎉 Hope you enjoy it.\nHow was it? 👍 or 👎`,
   };
 
   const msg = msgs[newStatus];
-  if (msg) {
-    console.log(`[notify] → Consumer: ${msg} (actor: ${actor})`);
+  if (!msg) return;
+
+  console.log(`[notify] → ${consumer.phone}: ${msg} (actor: ${actor})`);
+  sendWhatsApp(consumer.phone, msg);
+
+  // On delivered: set awaitingRating in conversation state
+  if (newStatus === "delivered") {
+    const [convo] = await db
+      .select()
+      .from(conversations)
+      .where(eq(conversations.phone, consumer.phone))
+      .limit(1);
+
+    if (convo) {
+      await db
+        .update(conversations)
+        .set({
+          state: {
+            ...((convo.state as any) || {}),
+            awaitingRating: order.id,
+            awaitingRatingMerchantId: order.merchantId,
+          },
+        })
+        .where(eq(conversations.id, convo.id));
+    }
   }
 }

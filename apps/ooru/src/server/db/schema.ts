@@ -306,6 +306,21 @@ export const dailyPnl = pgTable(
   ]
 );
 
+// ── ratings ────────────────────────────────────────────────
+export const ratings = pgTable(
+  "ratings",
+  {
+    id: serial("id").primaryKey(),
+    orderId: integer("order_id").references(() => orders.id),
+    consumerId: integer("consumer_id").references(() => consumers.id),
+    merchantId: integer("merchant_id").references(() => merchants.id),
+    score: integer("score").notNull(),
+    complaintCategory: text("complaint_category"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [index("ratings_order_id_idx").on(t.orderId)]
+);
+
 // ── message_log ────────────────────────────────────────────
 export const messageLog = pgTable("message_log", {
   id: serial("id").primaryKey(),

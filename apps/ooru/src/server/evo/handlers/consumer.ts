@@ -5,10 +5,13 @@ import {
   orders,
   consumers,
   conversations,
+  ratings,
 } from "../../db/schema.js";
 import { eq, and, desc, inArray } from "drizzle-orm";
 import { fuzzyMatchItem } from "../utils/fuzzyMatch.js";
 import { generateOrderNumber, cancelOrder } from "../../orders/stateMachine.js";
+import { emitToMerchant } from "../../socket.js";
+import { sendWhatsApp } from "../gupshup.js";
 
 export interface HandlerResult {
   reply: string;
@@ -25,12 +28,13 @@ function fmtRs(paise: number): string {
 // ── intent matchers ────────────────────────────────────────
 
 const INTENT_PATTERNS: [RegExp, string][] = [
+  [/^(👍|👎)$/i, "rate"],
+  [/(rate|review|feedback|stars?)\s/i, "rate"],
   [/(what.*(eat|order|food|open|hungry)|hungry|recommend|suggest|near\s*me|discover|restaurants?)/i, "discover"],
   [/(i\s*want|order|get\s*me|can\s*i\s*have|add|gimme)\s+/i, "order"],
   [/(same\s*as\s*last|usual\s*order|reorder|order\s*again|last\s*order)/i, "reorder"],
   [/(where|track|status|eta|how\s*long|my\s*order)/i, "track"],
   [/(cancel|don.?t\s*want|stop\s*order)/i, "cancel"],
-  [/(👍|👎|rate|review|feedback|stars?)/i, "rate"],
   [/(confirm|yes\s*order|place\s*it|go\s*ahead)/i, "confirm_order"],
 ];
 
@@ -148,6 +152,14 @@ async function startOrder(phone: string, message: string): Promise<HandlerResult
     .replace(/\s+from\s+.+$/i, "")
     .trim();
 
+  // Parse quantity: "2 chicken biryani" → qty=2, item="chicken biryani"
+  let qty = 1;
+  const qtyMatch = itemQuery.match(/^(\d+)\s+(.+)$/);
+  if (qtyMatch) {
+    qty = parseInt(qtyMatch[1]);
+    itemQuery = qtyMatch[2];
+  }
+
   const items = await db
     .select()
     .from(menuItems)
@@ -160,7 +172,7 @@ async function startOrder(phone: string, message: string): Promise<HandlerResult
 
   // Store pending order in conversation state
   const pendingItems = matched
-    ? [{ id: matched.id, name: matched.name, qty: 1, pricePaise: matched.pricePaise }]
+    ? [{ id: matched.id, name: matched.name, qty, pricePaise: matched.pricePaise }]
     : [];
 
   const [convo] = await db
@@ -184,9 +196,9 @@ async function startOrder(phone: string, message: string): Promise<HandlerResult
   }
 
   if (matched) {
-    const total = matched.pricePaise;
+    const total = matched.pricePaise * qty;
     return {
-      reply: `From *${merchant.name}*:\n• ${matched.name} × 1 — ${fmtRs(total)}\n\nTotal: ${fmtRs(total)}\n\nReply *confirm* to place this order, or add more items.`,
+      reply: `From *${merchant.name}*:\n• ${matched.name} × ${qty} — ${fmtRs(total)}\n\nTotal: ${fmtRs(total)}\n\nReply *confirm* to place this order, or add more items.`,
       intent: "order",
       handled: true,
     };
@@ -253,7 +265,7 @@ async function confirmOrder(phone: string): Promise<HandlerResult> {
       deliveryFeePaise: deliveryFee,
       totalPaise: total,
       paymentMethod: "upi",
-      paymentStatus: "pending",
+      paymentStatus: "paid", // Mock Razorpay — instant payment
       neighbourhoodSlug: consumer?.neighbourhoodSlug || "indiranagar",
     })
     .returning();
@@ -270,7 +282,25 @@ async function confirmOrder(phone: string): Promise<HandlerResult> {
       .where(eq(consumers.id, consumer.id));
   }
 
-  // Clear pending order
+  // Emit to KDS
+  emitToMerchant(pending.merchantId, "order:new", order);
+
+  // Notify merchant via WhatsApp
+  const [merchant] = await db
+    .select()
+    .from(merchants)
+    .where(eq(merchants.id, pending.merchantId))
+    .limit(1);
+
+  if (merchant) {
+    const itemList = pending.items.map((i: any) => `${i.name} × ${i.qty}`).join(", ");
+    sendWhatsApp(
+      merchant.phone,
+      `New order #${orderNumber}! ${itemList}. Total: ${fmtRs(total)}. Reply ACCEPT or open KDS.`
+    );
+  }
+
+  // Clear pending order from conversation
   if (convo) {
     const newState = { ...((convo.state as any) || {}) };
     delete newState.pendingOrder;
@@ -280,8 +310,21 @@ async function confirmOrder(phone: string): Promise<HandlerResult> {
       .where(eq(conversations.id, convo.id));
   }
 
+  // Build receipt
+  const itemLines = pending.items
+    .map((i: any) => `• ${i.name} × ${i.qty} — ${fmtRs(i.pricePaise * i.qty)}`)
+    .join("\n");
+
+  const receipt = `Receipt #${orderNumber}
+${itemLines}
+Subtotal: ${fmtRs(subtotal)}
+GST (5%): ${fmtRs(gst)}
+Delivery: ${fmtRs(deliveryFee)}
+*Total: ${fmtRs(total)}*
+Payment: UPI ✓`;
+
   return {
-    reply: `Order placed! 🎉\n\n*${orderNumber}* from ${pending.merchantName}\n${pending.items.map((i: any) => `• ${i.name} × ${i.qty}`).join("\n")}\n\nTotal: ${fmtRs(total)} (incl. GST + delivery)\nPayment: UPI\n\nI'll update you as it progresses!`,
+    reply: `Order placed! 🎉\n\n${receipt}\n\n${pending.merchantName} will confirm shortly. I'll keep you updated!`,
     intent: "confirm_order",
     handled: true,
   };
@@ -478,54 +521,128 @@ async function rate(phone: string, message: string): Promise<HandlerResult> {
     return { reply: "Thanks for the feedback!", intent: "rate", handled: true };
   }
 
-  const [lastDelivered] = await db
+  // Check conversation state for awaitingRating
+  const [convo] = await db
     .select()
-    .from(orders)
-    .where(
-      and(
-        eq(orders.consumerId, consumer.id),
-        eq(orders.status, "delivered")
-      )
-    )
-    .orderBy(desc(orders.createdAt))
+    .from(conversations)
+    .where(eq(conversations.phone, phone))
     .limit(1);
 
-  if (!lastDelivered) {
-    return { reply: "No recent order to rate.", intent: "rate", handled: true };
+  const state = (convo?.state as any) || {};
+  const awaitingOrderId = state.awaitingRating;
+  const awaitingMerchantId = state.awaitingRatingMerchantId;
+
+  // Handle complaint category selection (after 👎)
+  if (state.awaitingComplaintCategory && awaitingOrderId) {
+    const categories: Record<string, string> = {
+      "1": "wrong_items",
+      "2": "cold_food",
+      "3": "late_delivery",
+      "4": "other",
+    };
+    const category = categories[message.trim()] || "other";
+
+    await db.insert(ratings).values({
+      orderId: awaitingOrderId,
+      consumerId: consumer.id,
+      merchantId: awaitingMerchantId,
+      score: 1,
+      complaintCategory: category,
+    });
+
+    // Clear rating state
+    const newState = { ...state };
+    delete newState.awaitingRating;
+    delete newState.awaitingRatingMerchantId;
+    delete newState.awaitingComplaintCategory;
+    if (convo) {
+      await db.update(conversations).set({ state: newState }).where(eq(conversations.id, convo.id));
+    }
+
+    return {
+      reply: "Thanks for telling us. We'll look into it and make sure it doesn't happen again. 🙏",
+      intent: "rate",
+      handled: true,
+    };
+  }
+
+  // Find the order to rate
+  let orderId = awaitingOrderId;
+  let merchantId = awaitingMerchantId;
+
+  if (!orderId) {
+    const [lastDelivered] = await db
+      .select()
+      .from(orders)
+      .where(and(eq(orders.consumerId, consumer.id), eq(orders.status, "delivered")))
+      .orderBy(desc(orders.createdAt))
+      .limit(1);
+    if (!lastDelivered) {
+      return { reply: "No recent order to rate.", intent: "rate", handled: true };
+    }
+    orderId = lastDelivered.id;
+    merchantId = lastDelivered.merchantId;
   }
 
   const isPositive = /👍|good|great|awesome|loved|nice|perfect|5/i.test(message);
-  const isNegative = /👎|bad|terrible|worst|cold|late|wrong|1|2/i.test(message);
+  const isNegative = /👎|bad|terrible|worst|cold|late|wrong/i.test(message);
 
-  if (isPositive && lastDelivered.merchantId) {
+  if (isPositive) {
+    // Insert 5-star rating
+    await db.insert(ratings).values({
+      orderId,
+      consumerId: consumer.id,
+      merchantId,
+      score: 5,
+    });
+
     // Update taste profile
-    const [merchant] = await db
-      .select()
-      .from(merchants)
-      .where(eq(merchants.id, lastDelivered.merchantId))
-      .limit(1);
+    if (merchantId) {
+      const [merchant] = await db
+        .select()
+        .from(merchants)
+        .where(eq(merchants.id, merchantId))
+        .limit(1);
 
-    const profile = (consumer.tasteProfile as any) || {};
-    const cuisines = merchant?.cuisine || [];
-    for (const c of cuisines) {
-      profile[c] = (profile[c] || 0) + 1;
+      const profile = (consumer.tasteProfile as any) || {};
+      const cuisines = merchant?.cuisine || [];
+      for (const c of cuisines) {
+        profile[c] = (profile[c] || 0) + 1;
+      }
+      await db
+        .update(consumers)
+        .set({ tasteProfile: profile, updatedAt: new Date() })
+        .where(eq(consumers.id, consumer.id));
     }
 
-    await db
-      .update(consumers)
-      .set({ tasteProfile: profile, updatedAt: new Date() })
-      .where(eq(consumers.id, consumer.id));
+    // Clear rating state
+    if (convo) {
+      const newState = { ...state };
+      delete newState.awaitingRating;
+      delete newState.awaitingRatingMerchantId;
+      await db.update(conversations).set({ state: newState }).where(eq(conversations.id, convo.id));
+    }
 
     return {
-      reply: `Thanks for the 👍! We'll remember you love ${cuisines.join(", ") || "this food"}.`,
+      reply: "Glad you liked it! 😊 We'll remember your preferences.",
       intent: "rate",
       handled: true,
     };
   }
 
   if (isNegative) {
+    // Set complaint flow
+    if (convo) {
+      await db
+        .update(conversations)
+        .set({
+          state: { ...state, awaitingComplaintCategory: true },
+        })
+        .where(eq(conversations.id, convo.id));
+    }
+
     return {
-      reply: "Sorry about that! What went wrong? I'll flag it for the restaurant.",
+      reply: "Sorry about that! What went wrong?\n1️⃣ Wrong items\n2️⃣ Cold food\n3️⃣ Late delivery\n4️⃣ Other",
       intent: "rate",
       handled: true,
     };
