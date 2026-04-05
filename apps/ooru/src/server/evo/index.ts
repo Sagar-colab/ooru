@@ -1,4 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { readFileSync } from "fs";
+import { resolve, dirname } from "path";
+import { fileURLToPath } from "url";
 import { db } from "../db/index.js";
 import {
   consumers,
@@ -14,9 +17,36 @@ import {
   matchShopOwnerIntent,
   handleShopOwnerIntent,
 } from "./handlers/shopOwner.js";
+import {
+  matchRestaurantIntent,
+  handleRestaurantIntent,
+} from "./handlers/restaurant.js";
 
-const apiKey = process.env.ANTHROPIC_API_KEY || undefined;
-const client = apiKey ? new Anthropic({ apiKey }) : null;
+function getApiKey(): string | undefined {
+  const sysKey = process.env.ANTHROPIC_API_KEY;
+  if (sysKey && sysKey.trim().length > 10) return sysKey.trim();
+
+  try {
+    const dir = dirname(fileURLToPath(import.meta.url));
+    const envPath = resolve(dir, "../../../.env");
+    const content = readFileSync(envPath, "utf8");
+    const match = content.match(/^ANTHROPIC_API_KEY=(.+)$/m);
+    if (match && match[1].trim().length > 10) return match[1].trim();
+  } catch {}
+  return undefined;
+}
+
+let client: Anthropic | null = null;
+function getClient(): Anthropic | null {
+  if (client) return client;
+  const key = getApiKey();
+  if (!key) {
+    console.log("[evo] No ANTHROPIC_API_KEY found");
+    return null;
+  }
+  client = new Anthropic({ apiKey: key });
+  return client;
+}
 
 // ── noise filter ───────────────────────────────────────────
 
@@ -169,11 +199,12 @@ const ROLE_INTENTS: Record<string, string[]> = {
 };
 
 async function classifyIntent(role: string, message: string): Promise<string> {
-  if (!client) return "mock";
+  const c = getClient();
+  if (!c) return "mock";
 
   const intents = ROLE_INTENTS[role] || ["general_question"];
   try {
-    const response = await client.messages.create({
+    const response = await c.messages.create({
       model: "claude-haiku-4-5-20251001",
       max_tokens: 30,
       system: `Classify this message into exactly one intent from this list. Return only the intent name, nothing else.\nIntents: ${intents.join(", ")}`,
@@ -223,6 +254,17 @@ export async function runEvo(input: EvoInput): Promise<EvoResult> {
     }
   }
 
+  if (role === "merchant") {
+    const intent = matchRestaurantIntent(message);
+    if (intent) {
+      const result = await handleRestaurantIntent(intent, phone, message);
+      if (result.handled) {
+        classifyIntent(role, message).catch(() => {});
+        return { reply: result.reply, intent: result.intent, model: "handler" };
+      }
+    }
+  }
+
   // 2. Fall through to general Evo (LLM)
   const persona = PERSONAS[role];
   if (!persona) {
@@ -244,8 +286,8 @@ ${context}
 Use the data above to answer the user's question. If the data doesn't cover what they're asking, say so honestly.
 Respond in 1-3 short sentences. This is WhatsApp.`;
 
-  if (!client) {
-    // Mock mode — still try handler pattern match for structured responses
+  const c = getClient();
+  if (!c) {
     return {
       reply: `[mock] Role: ${role}. Context loaded. Message: "${message}"`,
       intent: "mock",
@@ -256,7 +298,7 @@ Respond in 1-3 short sentences. This is WhatsApp.`;
   try {
     // Run response generation and intent classification in parallel
     const [response, detectedIntent] = await Promise.all([
-      client.messages.create({
+      c.messages.create({
         model: "claude-haiku-4-5-20251001",
         max_tokens: 512,
         system: systemPrompt,

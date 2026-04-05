@@ -14,8 +14,13 @@ import { eq } from "drizzle-orm";
 
 const router = Router();
 
-const apiKey = process.env.ANTHROPIC_API_KEY || undefined;
-const client = apiKey ? new Anthropic({ apiKey }) : null;
+let _client: Anthropic | null = null;
+function getClient(): Anthropic | null {
+  if (_client) return _client;
+  const key = process.env.ANTHROPIC_API_KEY;
+  if (key) _client = new Anthropic({ apiKey: key });
+  return _client;
+}
 
 // ── persona prompts ────────────────────────────────────────
 
@@ -172,6 +177,7 @@ ${context.summary}
 
 Use the data above to answer the user's question. If the data doesn't cover what they're asking, say so honestly.`;
 
+  const client = getClient();
   if (!client) {
     return res.json({
       role,
