@@ -177,10 +177,36 @@ async function handleNewUser(
 
   // Rider — awaiting name
   if (state.step === "awaiting_rider_name") {
+    await db
+      .update(conversations)
+      .set({ state: { ...state, step: "awaiting_rider_zone", riderName: text.trim() } })
+      .where(eq(conversations.id, convo!.id));
+    return `Welcome ${text.trim()}! Which neighbourhood will you work in?\n1️⃣ Indiranagar\n2️⃣ Koramangala\n3️⃣ Domlur`;
+  }
+
+  // Rider — awaiting zone
+  if (state.step === "awaiting_rider_zone") {
+    const zones: Record<string, string> = { "1": "indiranagar", "2": "koramangala", "3": "domlur" };
+    const zone = zones[text.trim()] || "indiranagar";
+    await db
+      .update(conversations)
+      .set({ state: { ...state, step: "awaiting_rider_licence", riderZone: zone } })
+      .where(eq(conversations.id, convo!.id));
+    return "Do you have a driving licence?\n1️⃣ Yes — bike\n2️⃣ Yes — bicycle/e-cycle\n3️⃣ No";
+  }
+
+  // Rider — awaiting licence
+  if (state.step === "awaiting_rider_licence") {
+    const riderName = state.riderName || "Rider";
+    const zone = state.riderZone || "indiranagar";
     await db.insert(riders).values({
       phone,
-      name: text.trim(),
+      name: riderName,
+      tier: "new",
+      zone,
+      neighbourhoodSlug: zone,
       isOnline: false,
+      config: { trainingComplete: false, trainingModules: 0, licenceType: text.trim() },
     });
     await db
       .update(conversations)
@@ -190,7 +216,7 @@ async function handleNewUser(
         state: { step: "done" },
       })
       .where(eq(conversations.id, convo!.id));
-    return `Welcome ${text.trim()}! 🏍️ You're registered as a rider. You'll start getting delivery requests once activated.`;
+    return `Welcome ${riderName}! 🏍️ You're registered as a new rider in ${zone}.\nTraining starts now — 5 short modules. Type *START* to begin.`;
   }
 
   return WELCOME_MSG;

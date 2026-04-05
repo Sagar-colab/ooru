@@ -93,7 +93,7 @@ function getDemoPhone(role: Role): string {
     case "consumer":
       return "demo-consumer";
     case "rider":
-      return "demo-rider";
+      return "9900004001"; // Ravi Kumar
     default:
       return "demo-unknown";
   }

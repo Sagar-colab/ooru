@@ -25,6 +25,10 @@ import {
   matchConsumerIntent,
   handleConsumerIntent,
 } from "./handlers/consumer.js";
+import {
+  matchRiderIntent,
+  handleRiderIntent,
+} from "./handlers/rider.js";
 
 function getApiKey(): string | undefined {
   const sysKey = process.env.ANTHROPIC_API_KEY;
@@ -273,6 +277,17 @@ export async function runEvo(input: EvoInput): Promise<EvoResult> {
     const intent = matchConsumerIntent(message);
     if (intent) {
       const result = await handleConsumerIntent(intent, phone, message);
+      if (result.handled) {
+        classifyIntent(role, message).catch(() => {});
+        return { reply: result.reply, intent: result.intent, model: "handler" };
+      }
+    }
+  }
+
+  if (role === "rider") {
+    const intent = matchRiderIntent(message);
+    if (intent) {
+      const result = await handleRiderIntent(intent, phone, message);
       if (result.handled) {
         classifyIntent(role, message).catch(() => {});
         return { reply: result.reply, intent: result.intent, model: "handler" };

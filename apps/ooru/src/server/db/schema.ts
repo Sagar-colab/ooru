@@ -120,6 +120,7 @@ export const riders = pgTable("riders", {
   ratingAvg: real("rating_avg").default(5.0),
   totalDeliveries: integer("total_deliveries").default(0),
   earningsTodayPaise: integer("earnings_today_paise").default(0),
+  config: jsonb("config").default("{}"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
 });
@@ -370,6 +371,40 @@ export const shopJobCards = pgTable(
     notes: text("notes"),
   },
   (t) => [index("shop_job_cards_shop_id_idx").on(t.shopBusinessId)]
+);
+
+// ── rider_earnings ─────────────────────────────────────────
+export const riderEarnings = pgTable(
+  "rider_earnings",
+  {
+    id: serial("id").primaryKey(),
+    riderId: integer("rider_id").references(() => riders.id),
+    orderId: integer("order_id").references(() => orders.id),
+    date: date("date").notNull(),
+    amountPaise: integer("amount_paise").notNull(),
+    type: text("type").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [index("rider_earnings_rider_date_idx").on(t.riderId, t.date)]
+);
+
+// ── delivery_assignments ───────────────────────────────────
+export const deliveryAssignments = pgTable(
+  "delivery_assignments",
+  {
+    id: serial("id").primaryKey(),
+    orderId: integer("order_id").references(() => orders.id),
+    riderId: integer("rider_id").references(() => riders.id),
+    role: text("role").notNull(),
+    status: text("status").default("assigned"),
+    assignedAt: timestamp("assigned_at", { withTimezone: true }).defaultNow(),
+    acceptedAt: timestamp("accepted_at", { withTimezone: true }),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+  },
+  (t) => [
+    index("delivery_assignments_order_idx").on(t.orderId),
+    index("delivery_assignments_rider_idx").on(t.riderId),
+  ]
 );
 
 // ── ratings ────────────────────────────────────────────────
