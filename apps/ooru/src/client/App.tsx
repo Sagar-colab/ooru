@@ -3,6 +3,7 @@ import DemoChat from "./pages/DemoChat";
 import KDS from "./pages/KDS";
 import POS from "./pages/POS";
 import Neighbourhood from "./pages/Neighbourhood";
+import Market from "./pages/Market";
 
 export default function App() {
   return (
@@ -11,6 +12,7 @@ export default function App() {
       <Route path="/kds/:merchantId" component={KDS} />
       <Route path="/pos/:merchantId" component={POS} />
       <Route path="/neighbourhood/:slug" component={Neighbourhood} />
+      <Route path="/market/:slug" component={Market} />
       <Route path="/">
         <Redirect to="/neighbourhood/indiranagar" />
       </Route>

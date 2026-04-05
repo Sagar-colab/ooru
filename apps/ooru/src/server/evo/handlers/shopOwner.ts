@@ -10,6 +10,7 @@ import {
   suppliers,
   procurementOrders,
   groupProcurementOrders,
+  ondcCatalogue,
   shopBusinesses as shopBizTable,
 } from "../../db/schema.js";
 import { eq, and, lt, lte, gte, sql, desc, inArray } from "drizzle-orm";
@@ -88,6 +89,9 @@ const INTENT_PATTERNS: [RegExp, string][] = [
   [/(order\s+usual|reorder\s+stock|thursday\s+stock|weekly\s+order)/i, "procurement_reorder"],
   [/(group\s*(order|buy)|bulk\s*order)/i, "supplier_group_buy"],
   [/(start\s*a?\s*group)/i, "start_group_buy"],
+  [/(add|list|put)\s+.+\s+(online|store|ondc|market)/i, "ondc_add"],
+  [/(take|remove)\s+.+\s+(off|from)\s+(store|ondc|market)/i, "ondc_remove"],
+  [/(update|change)\s+.+\s+price\s+to\s+/i, "ondc_update_price"],
 ];
 
 export function matchShopOwnerIntent(message: string): string | null {
@@ -149,6 +153,12 @@ export async function handleShopOwnerIntent(
       return supplierGroupBuy(shop, message);
     case "start_group_buy":
       return startGroupBuy(shop, message);
+    case "ondc_add":
+      return ondcAdd(shop, message);
+    case "ondc_remove":
+      return ondcRemove(shop, message);
+    case "ondc_update_price":
+      return ondcUpdatePrice(shop, message);
     default:
       return NOT_HANDLED;
   }
@@ -1153,6 +1163,124 @@ async function startGroupBuy(shop: any, message: string): Promise<HandlerResult>
   return {
     reply: `Group order #GPO-${gpo.id} started! 🛒\n"${itemName}" — open for 48 hours.\n${notifyCount} other shop${notifyCount !== 1 ? "s" : ""} in ${slug} notified.`,
     intent: "start_group_buy",
+    handled: true,
+  };
+}
+
+// ── ondc_add ───────────────────────────────────────────────
+
+async function ondcAdd(shop: any, message: string): Promise<HandlerResult> {
+  // Parse: "add Bournvita 500g to my online store for 180 rupees"
+  const match = message.match(
+    /(?:add|list|put)\s+(.+?)\s+(?:to|on|in)\s+(?:my\s+)?(?:online\s+)?(?:store|ondc|market)(?:\s+(?:for|at)\s+(?:₹|rs\.?)?\s*(\d+))?/i
+  );
+
+  if (!match) {
+    return {
+      reply: 'Format: "add Bournvita to my online store for 180 rupees"',
+      intent: "ondc_add",
+      handled: true,
+    };
+  }
+
+  const itemName = match[1].trim();
+  const pricePaise = match[2] ? parseInt(match[2]) * 100 : 0;
+
+  if (!pricePaise) {
+    return {
+      reply: `How much should I list ${itemName} for? Reply with the price.`,
+      intent: "ondc_add",
+      handled: true,
+    };
+  }
+
+  const slug = shop.neighbourhoodSlug || "indiranagar";
+  const category = shop.businessType || "general";
+
+  await db.insert(ondcCatalogue).values({
+    shopBusinessId: shop.id,
+    neighbourhoodSlug: slug,
+    itemName,
+    pricePaise,
+    category,
+  });
+
+  const marketName = slug.charAt(0).toUpperCase() + slug.slice(1);
+  return {
+    reply: `Added ${itemName} (${fmtRs(pricePaise)}) to ${marketName} Market. It'll appear to customers immediately.`,
+    intent: "ondc_add",
+    handled: true,
+  };
+}
+
+// ── ondc_remove ────────────────────────────────────────────
+
+async function ondcRemove(shop: any, message: string): Promise<HandlerResult> {
+  const match = message.match(/(?:take|remove)\s+(.+?)\s+(?:off|from)/i);
+  if (!match) {
+    return { reply: 'Format: "take Maggi off the store"', intent: "ondc_remove", handled: true };
+  }
+
+  const itemName = match[1].trim();
+  const items = await db
+    .select()
+    .from(ondcCatalogue)
+    .where(eq(ondcCatalogue.shopBusinessId, shop.id));
+
+  const found = fuzzyMatchItem(
+    items.map((i) => ({ ...i, name: i.itemName })),
+    itemName
+  );
+
+  if (!found) {
+    return { reply: `Couldn't find "${itemName}" in your store.`, intent: "ondc_remove", handled: true };
+  }
+
+  await db
+    .update(ondcCatalogue)
+    .set({ isAvailable: false, updatedAt: new Date() })
+    .where(eq(ondcCatalogue.id, found.id));
+
+  return {
+    reply: `${found.itemName} removed from the online store.`,
+    intent: "ondc_remove",
+    handled: true,
+  };
+}
+
+// ── ondc_update_price ──────────────────────────────────────
+
+async function ondcUpdatePrice(shop: any, message: string): Promise<HandlerResult> {
+  const match = message.match(/(?:update|change)\s+(.+?)\s+price\s+to\s+(?:₹|rs\.?)?\s*(\d+)/i);
+  if (!match) {
+    return { reply: 'Format: "update Maggi price to 16"', intent: "ondc_update_price", handled: true };
+  }
+
+  const itemName = match[1].trim();
+  const newPricePaise = parseInt(match[2]) * 100;
+
+  const items = await db
+    .select()
+    .from(ondcCatalogue)
+    .where(eq(ondcCatalogue.shopBusinessId, shop.id));
+
+  const found = fuzzyMatchItem(
+    items.map((i) => ({ ...i, name: i.itemName })),
+    itemName
+  );
+
+  if (!found) {
+    return { reply: `Couldn't find "${itemName}" in your store.`, intent: "ondc_update_price", handled: true };
+  }
+
+  await db
+    .update(ondcCatalogue)
+    .set({ pricePaise: newPricePaise, updatedAt: new Date() })
+    .where(eq(ondcCatalogue.id, found.id));
+
+  return {
+    reply: `${found.itemName} updated to ${fmtRs(newPricePaise)} on the market.`,
+    intent: "ondc_update_price",
     handled: true,
   };
 }

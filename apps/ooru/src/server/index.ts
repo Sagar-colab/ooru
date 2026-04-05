@@ -19,6 +19,7 @@ import posRouter from "./routes/pos.js";
 import dukaanRouter from "./routes/dukaan.js";
 import bcfsRouter from "./routes/bcfs.js";
 import satelliteRouter from "./routes/satellite.js";
+import marketRouter from "./routes/market.js";
 import { scheduleMorningBrief } from "./crons/morningBrief.js";
 import { createServer } from "http";
 import { setupSocket } from "./socket.js";
@@ -65,6 +66,7 @@ app.use("/api/pos", posRouter);
 app.use("/dukaan", dukaanRouter);
 app.use("/api/bcfs", bcfsRouter);
 app.use("/api/satellite", satelliteRouter);
+app.use("/api/market", marketRouter);
 
 // Serve React dist in production
 if (process.env.NODE_ENV === "production") {

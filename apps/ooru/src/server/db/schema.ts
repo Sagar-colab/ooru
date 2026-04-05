@@ -484,6 +484,35 @@ export const groupProcurementOrders = pgTable(
   (t) => [index("group_procurement_slug_idx").on(t.neighbourhoodSlug)]
 );
 
+// ── ondc_catalogue ─────────────────────────────────────────
+export const ondcCatalogue = pgTable(
+  "ondc_catalogue",
+  {
+    id: serial("id").primaryKey(),
+    shopBusinessId: integer("shop_business_id").references(
+      () => shopBusinesses.id
+    ),
+    neighbourhoodSlug: text("neighbourhood_slug").notNull(),
+    itemName: text("item_name").notNull(),
+    description: text("description"),
+    photoUrl: text("photo_url"),
+    pricePaise: integer("price_paise").notNull(),
+    unit: text("unit").default("unit"),
+    category: text("category").notNull(),
+    isAvailable: boolean("is_available").default(true),
+    ondcItemId: text("ondc_item_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [
+    index("ondc_catalogue_slug_cat_idx").on(
+      t.neighbourhoodSlug,
+      t.category,
+      t.isAvailable
+    ),
+  ]
+);
+
 // ── satellite_cache ────────────────────────────────────────
 export const satelliteCache = pgTable(
   "satellite_cache",
