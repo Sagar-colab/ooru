@@ -282,6 +282,25 @@ export const conversations = pgTable(
   (t) => [index("conversations_phone_idx").on(t.phone)]
 );
 
+// ── daily_pnl ─────────────────────────────────────────────
+export const dailyPnl = pgTable(
+  "daily_pnl",
+  {
+    id: serial("id").primaryKey(),
+    merchantId: integer("merchant_id").references(() => merchants.id),
+    date: date("date").notNull(),
+    ordersCount: integer("orders_count").default(0),
+    grossPaise: integer("gross_paise").default(0),
+    commissionPaise: integer("commission_paise").default(0),
+    netPaise: integer("net_paise").default(0),
+    gstPaise: integer("gst_paise").default(0),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [
+    index("daily_pnl_merchant_date_idx").on(t.merchantId, t.date),
+  ]
+);
+
 // ── message_log ────────────────────────────────────────────
 export const messageLog = pgTable("message_log", {
   id: serial("id").primaryKey(),

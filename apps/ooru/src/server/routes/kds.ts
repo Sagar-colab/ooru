@@ -1,17 +1,19 @@
 import { Router } from "express";
 import { db } from "../db/index.js";
-import { orders, merchants, menuItems, menuCategories } from "../db/schema.js";
+import { orders, menuItems, menuCategories } from "../db/schema.js";
 import { eq, and, inArray, asc } from "drizzle-orm";
-import { emitToMerchant } from "../socket.js";
+import { advanceOrder, type OrderStatus } from "../orders/stateMachine.js";
 
 const router = Router();
 
 const ACTIVE_STATUSES = ["placed", "accepted", "preparing", "ready"];
 
-const STATUS_ADVANCE: Record<string, string> = {
+// Simple next-status map for KDS single-tap advance
+const KDS_NEXT: Record<string, OrderStatus> = {
   placed: "accepted",
   accepted: "preparing",
   preparing: "ready",
+  ready: "delivered", // walk-in shortcut; delivery orders use pickup_assigned
 };
 
 // GET /api/kds/:merchantId/orders
@@ -49,20 +51,15 @@ router.post("/:merchantId/orders/:orderId/advance", async (req, res) => {
 
   if (!order) return res.status(404).json({ error: "Order not found" });
 
-  const nextStatus = STATUS_ADVANCE[order.status || ""];
+  const nextStatus = KDS_NEXT[order.status || ""];
   if (!nextStatus) {
     return res.status(400).json({ error: `Cannot advance from status: ${order.status}` });
   }
 
-  const [updated] = await db
-    .update(orders)
-    .set({ status: nextStatus, updatedAt: new Date() })
-    .where(eq(orders.id, orderId))
-    .returning();
+  const result = await advanceOrder(orderId, nextStatus, "merchant");
+  if (!result.success) return res.status(400).json({ error: result.error });
 
-  emitToMerchant(merchantId, "order:status", updated);
-
-  res.json(updated);
+  res.json(result.order);
 });
 
 // GET /api/kds/:merchantId/menu
