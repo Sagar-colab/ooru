@@ -4,9 +4,10 @@ import {
   orders,
   merchants,
   riderEarnings,
+  riderSessions,
   deliveryAssignments,
 } from "../../db/schema.js";
-import { eq, and, desc, inArray } from "drizzle-orm";
+import { eq, and, desc, inArray, isNull } from "drizzle-orm";
 import { advanceOrder, type OrderStatus } from "../../orders/stateMachine.js";
 
 export interface HandlerResult {
@@ -148,6 +149,9 @@ async function goOnline(rider: any): Promise<HandlerResult> {
     })
     .where(eq(riders.id, rider.id));
 
+  // Start session
+  await db.insert(riderSessions).values({ riderId: rider.id });
+
   const zone = rider.zone || rider.neighbourhoodSlug || "Indiranagar";
   return {
     reply: `You're online in ${zone}. 🟢 Waiting for orders.`,
@@ -163,6 +167,20 @@ async function goOffline(rider: any): Promise<HandlerResult> {
     .update(riders)
     .set({ isOnline: false, updatedAt: new Date() })
     .where(eq(riders.id, rider.id));
+
+  // End open session
+  const [openSession] = await db
+    .select()
+    .from(riderSessions)
+    .where(and(eq(riderSessions.riderId, rider.id), isNull(riderSessions.endedAt)))
+    .orderBy(desc(riderSessions.startedAt))
+    .limit(1);
+  if (openSession) {
+    await db
+      .update(riderSessions)
+      .set({ endedAt: new Date() })
+      .where(eq(riderSessions.id, openSession.id));
+  }
 
   const { total, deliveryCount } = await getTodayEarnings(rider.id);
 

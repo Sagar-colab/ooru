@@ -3,6 +3,7 @@ import { orders, merchants, consumers, dailyPnl, conversations } from "../db/sch
 import { eq, and, sql } from "drizzle-orm";
 import { emitToMerchant } from "../socket.js";
 import { sendWhatsApp } from "../evo/gupshup.js";
+import { assignRider } from "../delivery/dispatch.js";
 
 // ── States ─────────────────────────────────────────────────
 
@@ -109,6 +110,13 @@ export async function advanceOrder(
   notifyConsumer(updated, targetStatus, actorRole).catch((e) =>
     console.error("[notify] Error:", e.message)
   );
+
+  // Auto-dispatch rider when order is ready (delivery orders only)
+  if (targetStatus === "ready" && updated.orderType === "delivery") {
+    assignRider(updated.id, "lastmile").catch((e) =>
+      console.error("[dispatch] Error:", e.message)
+    );
+  }
 
   // Update daily P&L on delivered
   if (targetStatus === "delivered" && updated.merchantId) {

@@ -407,6 +407,18 @@ export const deliveryAssignments = pgTable(
   ]
 );
 
+// ── rider_sessions ─────────────────────────────────────────
+export const riderSessions = pgTable(
+  "rider_sessions",
+  {
+    id: serial("id").primaryKey(),
+    riderId: integer("rider_id").references(() => riders.id),
+    startedAt: timestamp("started_at", { withTimezone: true }).defaultNow(),
+    endedAt: timestamp("ended_at", { withTimezone: true }),
+  },
+  (t) => [index("rider_sessions_rider_idx").on(t.riderId)]
+);
+
 // ── ratings ────────────────────────────────────────────────
 export const ratings = pgTable(
   "ratings",
