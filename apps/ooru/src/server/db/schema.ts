@@ -306,6 +306,49 @@ export const dailyPnl = pgTable(
   ]
 );
 
+// ── shop_appointments ──────────────────────────────────────
+export const shopAppointments = pgTable(
+  "shop_appointments",
+  {
+    id: serial("id").primaryKey(),
+    shopBusinessId: integer("shop_business_id").references(
+      () => shopBusinesses.id
+    ),
+    customerName: text("customer_name").notNull(),
+    customerPhoneHash: text("customer_phone_hash"),
+    serviceType: text("service_type"),
+    scheduledAt: timestamp("scheduled_at", { withTimezone: true }).notNull(),
+    durationMinutes: integer("duration_minutes").default(60),
+    status: text("status").default("scheduled"),
+    notes: text("notes"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [index("shop_appointments_shop_id_idx").on(t.shopBusinessId)]
+);
+
+// ── shop_job_cards ─────────────────────────────────────────
+export const shopJobCards = pgTable(
+  "shop_job_cards",
+  {
+    id: serial("id").primaryKey(),
+    shopBusinessId: integer("shop_business_id").references(
+      () => shopBusinesses.id
+    ),
+    customerName: text("customer_name").notNull(),
+    customerPhoneHash: text("customer_phone_hash"),
+    itemDescription: text("item_description").notNull(),
+    issueDescription: text("issue_description"),
+    status: text("status").default("received"),
+    estimatedCostPaise: integer("estimated_cost_paise"),
+    finalCostPaise: integer("final_cost_paise"),
+    receivedAt: timestamp("received_at", { withTimezone: true }).defaultNow(),
+    readyAt: timestamp("ready_at", { withTimezone: true }),
+    deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+    notes: text("notes"),
+  },
+  (t) => [index("shop_job_cards_shop_id_idx").on(t.shopBusinessId)]
+);
+
 // ── ratings ────────────────────────────────────────────────
 export const ratings = pgTable(
   "ratings",

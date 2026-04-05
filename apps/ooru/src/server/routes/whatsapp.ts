@@ -127,24 +127,42 @@ async function handleNewUser(
       .where(eq(conversations.id, convo!.id));
     return `Got it — "${text.trim()}". What type of business?
 
-1️⃣ Kirana
-2️⃣ Salon
-3️⃣ Pharmacy
-4️⃣ Mobile Repair
-5️⃣ Restaurant
+1️⃣ Kirana/Grocery
+2️⃣ Restaurant
+3️⃣ Salon/Barber
+4️⃣ Pharmacy
+5️⃣ Tailor
 6️⃣ Other`;
   }
 
   // Shop owner — awaiting business type
   if (state.step === "awaiting_business_type") {
-    const idx = parseInt(text.trim()) - 1;
-    const bizType = BIZ_TYPES[idx] || "other";
+    const typeMap: Record<string, string> = {
+      "1": "kirana", "2": "restaurant", "3": "salon",
+      "4": "pharmacy", "5": "tailor", "6": "other",
+    };
+    const bizType = typeMap[text.trim()] || "other";
+    await db
+      .update(conversations)
+      .set({
+        state: { ...state, step: "awaiting_business_address", businessType: bizType },
+      })
+      .where(eq(conversations.id, convo!.id));
+    return "What's your address or neighbourhood? (e.g. \"12th Main, Indiranagar\")";
+  }
+
+  // Shop owner — awaiting address
+  if (state.step === "awaiting_business_address") {
     const bizName = state.businessName || "My Shop";
+    const bizType = state.businessType || "other";
+    const address = text.trim();
 
     await db.insert(shopBusinesses).values({
       phone,
       businessName: bizName,
       businessType: bizType,
+      address,
+      neighbourhoodSlug: "indiranagar",
     });
     await db
       .update(conversations)
@@ -154,7 +172,7 @@ async function handleNewUser(
         state: { step: "done" },
       })
       .where(eq(conversations.id, convo!.id));
-    return `Done! "${bizName}" (${bizType}) is registered on Ooru. 🎉 Ask me about udhar tracking, inventory, or anything for your shop.`;
+    return `You're set up on Ooru! 🎉\n\nI'm Evo — think of me as a sharp friend who knows your numbers. Ask me anything.\n\nRight now your books show ₹0. As you record sales and udhar, I'll track everything here.`;
   }
 
   // Rider — awaiting name

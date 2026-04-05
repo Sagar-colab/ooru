@@ -16,6 +16,8 @@ import whatsappRouter from "./routes/whatsapp.js";
 import demoRouter from "./routes/demo.js";
 import kdsRouter from "./routes/kds.js";
 import posRouter from "./routes/pos.js";
+import dukaanRouter from "./routes/dukaan.js";
+import { scheduleMorningBrief } from "./crons/morningBrief.js";
 import { createServer } from "http";
 import { setupSocket } from "./socket.js";
 
@@ -58,6 +60,7 @@ app.use("/api/webhook", whatsappRouter);
 app.use("/api/demo", demoRouter);
 app.use("/api/kds", kdsRouter);
 app.use("/api/pos", posRouter);
+app.use("/dukaan", dukaanRouter);
 
 // Serve React dist in production
 if (process.env.NODE_ENV === "production") {
@@ -95,6 +98,9 @@ async function start() {
 
   httpServer.listen(PORT, "0.0.0.0", () => {
     console.log(`[ooru] Server running on port ${PORT}`);
+    if (process.env.NODE_ENV === "production") {
+      scheduleMorningBrief();
+    }
   });
 }
 

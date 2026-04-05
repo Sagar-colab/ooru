@@ -3,9 +3,11 @@ import {
   shopBusinesses,
   udharLedger,
   shopInventory,
+  shopAppointments,
+  shopJobCards,
   orders,
 } from "../../db/schema.js";
-import { eq, and, lt, sql } from "drizzle-orm";
+import { eq, and, lt, sql, desc } from "drizzle-orm";
 
 // ── handler result ─────────────────────────────────────────
 
@@ -56,14 +58,22 @@ async function getUdharSummary(shopId: number) {
 // ── intent matchers ────────────────────────────────────────
 
 const INTENT_PATTERNS: [RegExp, string][] = [
-  [/^(good\s*morning|gm|subah|suprabhat)/i, "morning_brief"],
+  [/^(good\s*morning|gm|subah|suprabhat|hello|hi)/i, "morning_brief"],
+  [/(sold|sale|becha|bikri)\s/i, "record_sale"],
+  [/(remind|yaad\s*dila)\s/i, "udhar_remind"],
+  [/(paid|payment|bhugtan|chukaya)\s/i, "udhar_payment"],
+  [/(got|received|supplier|stock\s*update|restock)\s.*(\d+)/i, "stock_update"],
+  [/(appointment|booking|appt)\s/i, "book_appointment"],
+  [/(received|accepted).*('s|s)\s.*(for|repair|fix|service)/i, "job_card_create"],
+  [/('s|s)\s.*(ready|done|complete|tayyar)/i, "job_card_update"],
+  [/(job\s*card|jc)/i, "job_card_create"],
   [/(revenue|sales|earn|income|kamai|kitna\s*(hua|kamaya))/i, "check_revenue"],
   [/(udhar|udhaar|credit|loan|baki).*(check|how\s*much|kitna|total|list|show)/i, "udhar_check"],
   [/(add|likh|log|record).*(udhar|udhaar|credit|baki)/i, "udhar_add"],
   [/(udhar|udhaar|credit|baki).*(add|likh|log|record)/i, "udhar_add"],
   [/(stock|inventory|maal|saman)/i, "stock_check"],
   [/(gst|gstin|gstr|tax)/i, "gst_query"],
-  [/(pnl|profit|loss|p&l|daily\s*report|weekly|last\s*\d+\s*days)/i, "check_daily_pnl"],
+  [/(pnl|profit|loss|p&l|daily\s*report|weekly|last\s*\d+\s*days|week\s*summary)/i, "check_daily_pnl"],
   [/(how\s*much).*(owe|baki|udhar)/i, "udhar_check"],
   [/(owe|baki).*(how\s*much)/i, "udhar_check"],
 ];
@@ -89,18 +99,32 @@ export async function handleShopOwnerIntent(
   switch (intent) {
     case "morning_brief":
       return morningBrief(shop);
+    case "record_sale":
+      return recordSale(shop, message);
     case "check_revenue":
       return checkRevenue(shop);
     case "udhar_check":
       return udharCheck(shop, message);
     case "udhar_add":
       return udharAdd(shop, message);
+    case "udhar_payment":
+      return udharPayment(shop, message);
+    case "udhar_remind":
+      return udharRemind(shop, message);
     case "stock_check":
       return stockCheck(shop);
+    case "stock_update":
+      return stockUpdate(shop, message);
     case "gst_query":
       return gstQuery(shop);
     case "check_daily_pnl":
       return checkDailyPnl(shop);
+    case "book_appointment":
+      return bookAppointment(shop, message);
+    case "job_card_create":
+      return jobCardCreate(shop, message);
+    case "job_card_update":
+      return jobCardUpdate(shop, message);
     default:
       return NOT_HANDLED;
   }
@@ -364,6 +388,363 @@ async function checkDailyPnl(shop: any): Promise<HandlerResult> {
   }
 
   return { reply: table.trim(), intent: "check_daily_pnl", handled: true };
+}
+
+// ── record_sale ────────────────────────────────────────────
+
+async function recordSale(shop: any, message: string): Promise<HandlerResult> {
+  // Parse: "sold 2 biryani for 560" or "sale 420" or "sold biryani 280"
+  const amountMatch = message.match(/(\d+)\s*(?:rs\.?|₹|rupees?)?/i);
+  if (!amountMatch) {
+    return {
+      reply: 'Tell me the amount. E.g.: "sold biryani for 280" or "sale 420"',
+      intent: "record_sale",
+      handled: true,
+    };
+  }
+
+  const amount = parseInt(amountMatch[1]);
+  if (amount > 10000) {
+    // Likely a quantity, not price — "sold 2 biryani for 560"
+    const priceMatch = message.match(/(?:for|at|₹|rs)\s*(\d+)/i);
+    if (priceMatch) {
+      const paise = parseInt(priceMatch[1]) * 100;
+      return doRecordSale(shop, paise);
+    }
+  }
+  return doRecordSale(shop, amount * 100);
+}
+
+async function doRecordSale(shop: any, amountPaise: number): Promise<HandlerResult> {
+  // Get today's running total
+  const { ledger } = await getUdharSummary(shop.id);
+  const today = new Date().toDateString();
+  const todaySales = ledger
+    .filter((e) => e.createdAt && new Date(e.createdAt).toDateString() === today && e.transactionType === "credit")
+    .reduce((s, e) => s + e.amountPaise, 0);
+
+  // Record as a credit entry (sale = money in)
+  await db.insert(udharLedger).values({
+    shopBusinessId: shop.id,
+    customerName: "Walk-in Sale",
+    amountPaise,
+    transactionType: "debit", // debit = money received
+    note: "POS walk-in sale",
+  });
+
+  return {
+    reply: `Recorded ${fmtRs(amountPaise)}. Today's total: ${fmtRs(todaySales + amountPaise)}.`,
+    intent: "record_sale",
+    handled: true,
+  };
+}
+
+// ── udhar_payment ──────────────────────────────────────────
+
+async function udharPayment(shop: any, message: string): Promise<HandlerResult> {
+  // Parse: "Kavitha paid 200" or "received 300 from Suresh"
+  const match1 = message.match(/([A-Z][a-z]+)\s+paid\s+(\d+)/i);
+  const match2 = message.match(/received\s+(\d+)\s+from\s+([A-Z][a-z]+)/i);
+
+  let customerName: string | null = null;
+  let amount: number | null = null;
+
+  if (match1) {
+    customerName = match1[1];
+    amount = parseInt(match1[2]);
+  } else if (match2) {
+    amount = parseInt(match2[1]);
+    customerName = match2[2];
+  }
+
+  if (!customerName || !amount) {
+    return {
+      reply: 'Format: "Kavitha paid 200" or "received 300 from Suresh"',
+      intent: "udhar_payment",
+      handled: true,
+    };
+  }
+
+  const amountPaise = amount * 100;
+
+  await db.insert(udharLedger).values({
+    shopBusinessId: shop.id,
+    customerName,
+    amountPaise,
+    transactionType: "debit",
+    note: `Payment received via WhatsApp`,
+  });
+
+  const { byCustomer } = await getUdharSummary(shop.id);
+  const remaining = byCustomer.get(customerName)?.total || 0;
+
+  return {
+    reply: `Updated. ${customerName} now owes ${remaining > 0 ? fmtRs(remaining) : "₹0 — all clear!"}.`,
+    intent: "udhar_payment",
+    handled: true,
+  };
+}
+
+// ── udhar_remind ───────────────────────────────────────────
+
+async function udharRemind(shop: any, message: string): Promise<HandlerResult> {
+  // Parse: "remind Kavitha" or "remind Suresh about udhar"
+  const nameMatch = message.match(/remind\s+([A-Z][a-z]+)/i);
+  if (!nameMatch) {
+    return { reply: 'Who should I remind? E.g.: "remind Kavitha"', intent: "udhar_remind", handled: true };
+  }
+
+  const name = nameMatch[1];
+  const { byCustomer } = await getUdharSummary(shop.id);
+
+  let found: { total: number } | null = null;
+  let actualName = name;
+  for (const [n, data] of byCustomer) {
+    if (n.toLowerCase().includes(name.toLowerCase())) {
+      found = data;
+      actualName = n;
+      break;
+    }
+  }
+
+  if (!found || found.total <= 0) {
+    return { reply: `${name} has no outstanding udhar.`, intent: "udhar_remind", handled: true };
+  }
+
+  const reminderText = `Hi ${actualName}, just a reminder that ${fmtRs(found.total)} is outstanding at ${shop.businessName}. Whenever you get a chance, no rush! 🙏`;
+  const waUrl = `https://wa.me/?text=${encodeURIComponent(reminderText)}`;
+
+  return {
+    reply: `Reminder ready for ${actualName} (${fmtRs(found.total)}):\n\n"${reminderText}"\n\nForward link: ${waUrl}`,
+    intent: "udhar_remind",
+    handled: true,
+  };
+}
+
+// ── stock_update ───────────────────────────────────────────
+
+async function stockUpdate(shop: any, message: string): Promise<HandlerResult> {
+  // Parse: "got 50 packets of Maggi" or "received 100 rice bags"
+  const match = message.match(/(\d+)\s+(?:packets?\s+(?:of\s+)?|bags?\s+(?:of\s+)?|units?\s+(?:of\s+)?)?(.+?)(?:\s+from\s+.*)?$/i);
+  if (!match) {
+    return { reply: 'Format: "got 50 Maggi" or "received 100 rice bags"', intent: "stock_update", handled: true };
+  }
+
+  const qty = parseInt(match[1]);
+  const itemName = match[2].replace(/\s+(from|supplier).*$/i, "").trim();
+
+  // Upsert: find existing or create
+  const existing = await db
+    .select()
+    .from(shopInventory)
+    .where(
+      and(
+        eq(shopInventory.shopBusinessId, shop.id),
+        sql`lower(${shopInventory.itemName}) = ${itemName.toLowerCase()}`
+      )
+    )
+    .limit(1);
+
+  if (existing.length > 0) {
+    await db
+      .update(shopInventory)
+      .set({
+        quantityOnHand: (existing[0].quantityOnHand || 0) + qty,
+        updatedAt: new Date(),
+      })
+      .where(eq(shopInventory.id, existing[0].id));
+    return {
+      reply: `Updated ${itemName} to ${(existing[0].quantityOnHand || 0) + qty} units.`,
+      intent: "stock_update",
+      handled: true,
+    };
+  }
+
+  await db.insert(shopInventory).values({
+    shopBusinessId: shop.id,
+    itemName,
+    quantityOnHand: qty,
+  });
+
+  return {
+    reply: `Added ${itemName}: ${qty} units.`,
+    intent: "stock_update",
+    handled: true,
+  };
+}
+
+// ── book_appointment ───────────────────────────────────────
+
+async function bookAppointment(shop: any, message: string): Promise<HandlerResult> {
+  // Parse: "appointment for Priya Friday 3pm haircut"
+  const match = message.match(
+    /(?:appointment|booking)\s+(?:for\s+)?([A-Z][a-z]+)\s+(.+?)(?:\s+(haircut|trim|shave|facial|massage|service|repair|fix|checkup))?$/i
+  );
+
+  if (!match) {
+    return {
+      reply: 'Format: "appointment for Priya Friday 3pm haircut"',
+      intent: "book_appointment",
+      handled: true,
+    };
+  }
+
+  const customerName = match[1];
+  const dateTimeStr = match[2].replace(/\s*(haircut|trim|shave|facial|massage|service|repair|fix|checkup)\s*$/i, "").trim();
+  const serviceType = match[3] || "general";
+
+  // Simple date parsing — use next occurrence of day name or relative
+  const scheduledAt = parseSimpleDate(dateTimeStr);
+
+  const [appt] = await db.insert(shopAppointments).values({
+    shopBusinessId: shop.id,
+    customerName,
+    serviceType,
+    scheduledAt,
+  }).returning();
+
+  const dateLabel = scheduledAt.toLocaleDateString("en-IN", {
+    weekday: "long",
+    day: "numeric",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+
+  return {
+    reply: `Booked ${customerName} for ${serviceType} on ${dateLabel}. I'll remind them the day before.`,
+    intent: "book_appointment",
+    handled: true,
+  };
+}
+
+// ── job_card_create ────────────────────────────────────────
+
+async function jobCardCreate(shop: any, message: string): Promise<HandlerResult> {
+  // Parse: "received Rahul's phone for screen repair" or "received Arun's laptop for charging port repair"
+  const match = message.match(
+    /(?:received|accepted)\s+([A-Z][a-z]+)(?:'s|s)\s+(.+?)(?:\s+for\s+(.+))?$/i
+  );
+
+  if (!match) {
+    return {
+      reply: 'Format: "received Rahul\'s phone for screen repair"',
+      intent: "job_card_create",
+      handled: true,
+    };
+  }
+
+  const customerName = match[1];
+  const itemDescription = match[2].trim();
+  const issueDescription = match[3]?.trim() || "";
+
+  const [card] = await db.insert(shopJobCards).values({
+    shopBusinessId: shop.id,
+    customerName,
+    itemDescription,
+    issueDescription,
+  }).returning();
+
+  return {
+    reply: `Job card created for ${customerName}'s ${itemDescription}. #JC-${card.id}\nI'll notify them when it's ready.`,
+    intent: "job_card_create",
+    handled: true,
+  };
+}
+
+// ── job_card_update ────────────────────────────────────────
+
+async function jobCardUpdate(shop: any, message: string): Promise<HandlerResult> {
+  // Parse: "Rahul's phone is ready" or "Arun's laptop is done"
+  const match = message.match(/([A-Z][a-z]+)(?:'s|s)\s+(.+?)\s+(?:is\s+)?(ready|done|complete|tayyar)/i);
+
+  if (!match) {
+    return {
+      reply: 'Format: "Rahul\'s phone is ready"',
+      intent: "job_card_update",
+      handled: true,
+    };
+  }
+
+  const customerName = match[1];
+
+  // Find open job card
+  const openCards = await db
+    .select()
+    .from(shopJobCards)
+    .where(
+      and(
+        eq(shopJobCards.shopBusinessId, shop.id),
+        sql`lower(${shopJobCards.customerName}) = ${customerName.toLowerCase()}`,
+        sql`${shopJobCards.status} != 'delivered'`
+      )
+    )
+    .orderBy(desc(shopJobCards.receivedAt))
+    .limit(1);
+
+  if (openCards.length === 0) {
+    return {
+      reply: `No open job card found for ${customerName}.`,
+      intent: "job_card_update",
+      handled: true,
+    };
+  }
+
+  const card = openCards[0];
+  await db
+    .update(shopJobCards)
+    .set({ status: "ready", readyAt: new Date() })
+    .where(eq(shopJobCards.id, card.id));
+
+  const notifyText = `Hi ${customerName}! Your ${card.itemDescription} is ready at ${shop.businessName}. Come collect when you can. 🙂`;
+  const waUrl = `https://wa.me/?text=${encodeURIComponent(notifyText)}`;
+
+  return {
+    reply: `Updated #JC-${card.id}! ${customerName}'s ${card.itemDescription} marked ready.\n\nWant to notify them? Forward: ${waUrl}`,
+    intent: "job_card_update",
+    handled: true,
+  };
+}
+
+// ── helpers ────────────────────────────────────────────────
+
+function parseSimpleDate(str: string): Date {
+  const now = new Date();
+  const lower = str.toLowerCase();
+
+  // "tomorrow 3pm"
+  if (lower.includes("tomorrow")) {
+    const d = new Date(now);
+    d.setDate(d.getDate() + 1);
+    const timeMatch = lower.match(/(\d{1,2})\s*(am|pm)/i);
+    if (timeMatch) {
+      let h = parseInt(timeMatch[1]);
+      if (timeMatch[2].toLowerCase() === "pm" && h < 12) h += 12;
+      d.setHours(h, 0, 0, 0);
+    }
+    return d;
+  }
+
+  // Day names: "friday 3pm"
+  const days = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+  for (let i = 0; i < days.length; i++) {
+    if (lower.includes(days[i])) {
+      const d = new Date(now);
+      const diff = (i - d.getDay() + 7) % 7 || 7;
+      d.setDate(d.getDate() + diff);
+      const timeMatch = lower.match(/(\d{1,2})\s*(am|pm)/i);
+      if (timeMatch) {
+        let h = parseInt(timeMatch[1]);
+        if (timeMatch[2].toLowerCase() === "pm" && h < 12) h += 12;
+        d.setHours(h, 0, 0, 0);
+      }
+      return d;
+    }
+  }
+
+  // Fallback: try native parse
+  const parsed = new Date(str);
+  return isNaN(parsed.getTime()) ? new Date(now.getTime() + 86400000) : parsed;
 }
 
 // ── format ─────────────────────────────────────────────────

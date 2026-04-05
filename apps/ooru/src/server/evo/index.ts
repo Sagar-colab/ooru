@@ -54,7 +54,7 @@ function getClient(): Anthropic | null {
 
 // ── noise filter ───────────────────────────────────────────
 
-const NOISE_PATTERNS = /^(ok|okay|k|🙏|thanks|thank you|hm|hmm|ha|haha|lol|bye|ya|yes|no|hi|hello)$/i;
+const NOISE_PATTERNS = /^(ok|okay|k|🙏|thanks|thank you|hm|hmm|ha|haha|lol|bye|ya|yes|no)$/i;
 
 export function isNoise(text: string): boolean {
   return NOISE_PATTERNS.test(text.trim());
