@@ -40,7 +40,7 @@ router.post("/chat", async (req, res) => {
         phone: demoPhone,
         name: "Demo Consumer",
         neighbourhoodSlug: "indiranagar",
-        dietary: "both",
+        dietary: ["both"],
       });
     }
     const [convo] = await db
