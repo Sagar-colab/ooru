@@ -74,9 +74,9 @@ app.use("/api/admin", adminRouter);
 // Serve React dist in production
 if (process.env.NODE_ENV === "production") {
   const { default: path } = await import("path");
-  const distPath = path.resolve(import.meta.dirname, "../../dist/public");
+  const distPath = path.resolve(import.meta.dirname, "./public");
   app.use(express.static(distPath));
-  app.get("*", (_req, res) => {
+  app.get("/{*path}", (_req, res) => {
     res.sendFile(path.join(distPath, "index.html"));
   });
 }

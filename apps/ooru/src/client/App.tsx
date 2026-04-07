@@ -16,7 +16,7 @@ export default function App() {
       <Route path="/market/:slug" component={Market} />
       <Route path="/admin" component={Admin} />
       <Route path="/">
-        <Redirect to="/neighbourhood/indiranagar" />
+        <Redirect to="/demo/chat" />
       </Route>
       <Route>
         <div style={{ fontFamily: "system-ui", padding: "2rem", textAlign: "center" }}>
