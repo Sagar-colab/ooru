@@ -1,4 +1,6 @@
-const GUPSHUP_URL = "https://api.gupshup.io/sm/api/v1/msg";
+const GUPSHUP_URL = "https://api.gupshup.io/wa/api/v1/msg";
+const GUPSHUP_SOURCE = "917411811702";
+const GUPSHUP_APP_NAME = "nammplate";
 
 export async function sendWhatsApp(
   phone: string,
@@ -6,38 +8,21 @@ export async function sendWhatsApp(
   buttons?: string[]
 ): Promise<void> {
   const apiKey = process.env.GUPSHUP_API_KEY;
-  const appName = process.env.GUPSHUP_APP_NAME || "ooru";
 
   if (!apiKey) {
     console.log(`[gupshup][mock] → ${phone}: ${text}`);
-    if (buttons?.length) console.log(`[gupshup][mock] buttons:`, buttons);
     return;
   }
 
   try {
-    let message: string;
-
-    if (buttons && buttons.length > 0) {
-      // Quick reply format (max 3 buttons)
-      const quickReplyButtons = buttons.slice(0, 3).map((btn, i) => ({
-        type: "reply",
-        reply: { id: `btn_${i}`, title: btn.slice(0, 20) },
-      }));
-      message = JSON.stringify({
-        type: "quick_reply",
-        content: { type: "text", text },
-        options: quickReplyButtons,
-      });
-    } else {
-      message = JSON.stringify({ type: "text", text });
-    }
+    const message = JSON.stringify({ type: "text", text });
 
     const body = new URLSearchParams({
       channel: "whatsapp",
-      source: appName,
+      source: GUPSHUP_SOURCE,
       destination: phone,
       message,
-      "src.name": appName,
+      "src.name": GUPSHUP_APP_NAME,
     });
 
     const res = await fetch(GUPSHUP_URL, {
@@ -49,8 +34,11 @@ export async function sendWhatsApp(
       body: body.toString(),
     });
 
+    const responseText = await res.text();
     if (!res.ok) {
-      console.error(`[gupshup] HTTP ${res.status}:`, await res.text());
+      console.error(`[gupshup] HTTP ${res.status}:`, responseText);
+    } else {
+      console.log(`[gupshup] Sent to ${phone}:`, responseText);
     }
   } catch (err: any) {
     console.error("[gupshup] Send failed:", err.message);
